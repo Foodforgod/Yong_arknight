@@ -1,0 +1,248 @@
+
+body {
+    background-color: #0f1112;
+    
+    background-image: url('https://images.wallpapersden.com/image/download/arknights-hd-gaming-poster_bWpqbGqUmZqaraWkpJRmbmdlrWZlbWU.jpg');
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat; 
+    background-attachment: fixed;
+    min-height: 100vh;
+    margin: 0;
+    color: #f0f0f0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    text-align: center;
+}
+
+
+.main-header {
+    background: rgba(26, 29, 30, 0.9);
+    padding: 20px 50px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 3px solid #00bcd4;
+    backdrop-filter: blur(10px);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.logo { font-size: 24px; font-weight: bold; letter-spacing: 3px; color: #fff; }
+
+.btn-add {
+    background: #00bcd4;
+    color: #000;
+    padding: 10px 25px;
+    text-decoration: none;
+    font-weight: bold;
+    border-radius: 4px;
+    transition: 0.3s;
+    font-size: 13px;
+    text-transform: uppercase;
+}
+.btn-add:hover { background: #fff; box-shadow: 0 0 15px #00bcd4; }
+
+
+.filter-section {
+    background: rgba(21, 24, 25, 0.85);
+    padding: 25px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #333;
+}
+
+.search-form input, .search-form select {
+    background: #1a1c1e;
+    border: 1px solid #444;
+    color: white;
+    padding: 12px;
+    margin: 5px;
+    border-radius: 4px;
+    outline: none;
+}
+
+
+.gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); 
+    gap: 30px;
+    padding: 40px;
+}
+
+.card {
+    background: linear-gradient(145deg, #1e2124, #141719);
+    border: 1px solid #333;
+    padding: 15px;
+    border-radius: 0 15px 0 15px; 
+    transition: 0.4s ease;
+    position: relative;
+    overflow: hidden;
+}
+.card:hover { border-color: #00bcd4; transform: translateY(-8px); }
+
+.card img {
+    width: 100%;
+    height: 250px;
+    object-fit: contain; 
+    filter: drop-shadow(0 5px 10px rgba(0,0,0,0.5));
+}
+
+.e2-tag {
+    position: absolute;
+    top: 0; right: 0;
+    background: #ffb400;
+    color: #000;
+    padding: 3px 12px;
+    font-weight: 900;
+    font-size: 12px;
+    z-index: 2;
+}
+
+
+.details-container {
+    display: flex;
+    max-width: 1300px; 
+    margin: 40px auto;
+    background: rgba(18, 20, 21, 0.92);
+    padding: 50px;
+    border-radius: 0 50px 0 50px;
+    border-left: 6px solid #00bcd4;
+    text-align: left;
+    gap: 50px; 
+    align-items: flex-start;
+}
+
+
+.details-image {
+    flex: 0 0 45%; 
+    display: flex;
+    justify-content: center;
+    position: relative;
+    overflow: visible; 
+}
+
+
+.details-image img {
+    width: 100%; 
+    max-width: 600px; 
+    height: auto;
+    filter: drop-shadow(0 15px 30px rgba(0,0,0,0.8));
+    transition: transform 0.1s ease; 
+    transform-origin: center top;
+}
+
+
+.details-info {
+    flex: 1;
+    min-width: 0; 
+}
+
+.details-info h1 {
+    font-size: 42px;
+    margin: 0;
+    letter-spacing: 2px;
+}
+
+
+.stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 25px 0;
+    background: rgba(30, 33, 35, 0.6);
+}
+.stats-table th {
+    background: #25282a;
+    color: #00bcd4;
+    padding: 15px;
+    text-align: left;
+    border-bottom: 2px solid #00bcd4;
+    font-size: 13px;
+    letter-spacing: 2px;
+}
+.stats-table td { padding: 12px 15px; border-bottom: 1px solid #222; color: #ccc; }
+.stat-val { text-align: right; color: #fff; font-weight: bold; font-size: 18px; }
+
+
+.promo-selector-wrap { margin: 25px 0; display: flex; align-items: center; gap: 15px; }
+.btn-group { display: flex; background: #111; padding: 4px; border: 1px solid #333; }
+.btn-toggle {
+    padding: 10px 25px;
+    color: #666;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: bold;
+}
+.btn-toggle.active { background: #ffb400; color: #000; }
+.btn-toggle.disabled { opacity: 0.2; cursor: not-allowed; }
+
+
+.skills-section { margin-top: 40px; }
+.skill-card {
+    display: flex;
+    gap: 20px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 20px;
+    margin-bottom: 15px;
+    border-left: 4px solid #00bcd4;
+    align-items: center;
+    transition: 0.3s;
+}
+.skill-card:hover { background: rgba(0, 188, 212, 0.1); }
+
+.skill-icon img {
+    width: 70px;
+    height: 70px;
+    object-fit: contain;
+    background: #000;
+    border: 1px solid #444;
+    padding: 4px;
+}
+
+.skill-info h5 { color: #ffb400; margin: 0 0 8px 0; font-size: 17px; }
+.skill-info p { font-size: 14px; color: #bbb; margin: 0; line-height: 1.5; }
+
+
+.form-container {
+    background: rgba(25, 27, 28, 0.95);
+    display: inline-block;
+    padding: 40px;
+    border-radius: 4px;
+    margin: 40px auto;
+    border: 1px solid #333;
+    width: 90%;
+    max-width: 600px;
+    text-align: left;
+}
+
+.form-section {
+    margin-bottom: 30px;
+    padding: 20px;
+    background: rgba(255,255,255,0.02);
+    border-left: 3px solid #00bcd4;
+}
+.form-section.e2 { border-left-color: #ffb400; }
+
+input, select, textarea {
+    background: #0d0e0f;
+    border: 1px solid #333;
+    color: #fff;
+    padding: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 15px;
+}
+
+.grid-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+
+.back-to-top {
+    position: fixed;
+    bottom: 30px; right: 30px;
+    width: 50px; height: 50px;
+    background: #00bcd4; color: #000;
+    border-radius: 50%;
+    display: flex; justify-content: center; align-items: center;
+    text-decoration: none; transition: 0.3s;
+    z-index: 1000;
+}
+.back-to-top:hover { background: #fff; transform: scale(1.1); }
