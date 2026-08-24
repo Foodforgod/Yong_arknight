@@ -97,6 +97,9 @@ A web-based Arknights operator gallery and personnel database system built with 
 <img width="1906" height="967" alt="image" src="https://github.com/user-attachments/assets/2386fc47-7ace-4854-9054-7eb375404a18" />
 
 * **Modify Data**: While viewing an operator's dossier (details.php), click the **MODIFY DATA** button to edit existing stats, skills, or update image files in edit.php.
+
+<img width="317" height="93" alt="image" src="https://github.com/user-attachments/assets/11f5a0dc-98e8-4e80-a80b-229e5d3bf8ab" />
+
 * **Dismiss Operator**: Click the **[ DISMISS OPERATOR ]** link at the bottom of any operator card in the gallery to permanently remove them from the records with a confirmation check.
 
 ---
