@@ -41,9 +41,8 @@ A web-based Arknights operator gallery and personnel database system built with 
 ## ⚙️ Step-by-Step Guide: How to Use This Project
 
 ### Step 1: Local Environment Setup
-<img src="<img width="1912" height="990" alt="Screenshot 2026-08-24 150922" src="https://github.com/user-attachments/assets/5b19b380-a4e4-43ab-8108-ecf0c5d80eaf" />
-" alt="Arknights Gallery Preview" width="700">
-" />
+<img width="1912" height="990" alt="Screenshot 2026-08-24 150922" src="https://github.com/user-attachments/assets/a7441093-69cd-4ab7-ad26-42df2354d7cd" />
+
 1. Clone or place your repository inside your local server directory (such as XAMPP's htdocs folder).
 2. Start Apache and MySQL services via your XAMPP control panel.
 
