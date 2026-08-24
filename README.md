@@ -64,28 +64,38 @@ A web-based Arknights operator gallery and personnel database system built with 
 
 ### Step 3: Accessing the Gallery
 <img width="1916" height="1093" alt="image" src="https://github.com/user-attachments/assets/dbf3a8f1-2735-4855-8ed7-bdf375455ade" />
+
 1. Open your web browser and navigate to the project root directory:
    http://localhost/Yong_arknight/index.php
+
 2. You will see the main **Rhodes Island Archives** gallery showcasing cards color-coded by rarity with E2 indicator tags.
 
 ### Step 4: Searching and Filtering Operators
+<img width="1916" height="957" alt="image" src="https://github.com/user-attachments/assets/7b0b3d0a-1a6b-4eaa-b041-3688ae88e468" />
+
 1. Use the search bar at the top of the gallery to look up operators by their name.
 2. Select a specific class from the dropdown menu (e.g., GUARD, SNIPER, MEDIC) to filter results.
 3. Click **RESET** to clear filters and view all operators.
 
 ### Step 5: Viewing and Interacting with Operator Dossiers
+<img width="1917" height="977" alt="image" src="https://github.com/user-attachments/assets/caaf7a25-26cd-4173-a2e9-2af5e41f7ea3" />
+
 1. Click on any operator card in the gallery to open their detailed dossier page (details.php).
 2. Use the **PROMOTION** toggle buttons to switch between **PHASE 0/1** and **PHASE 2** stats/portraits.
 3. Scroll over the operator portrait and use your mouse wheel or click to zoom in/out of the artwork.
 4. Review combat skill details, icons, and archive background lore.
 
 ### Step 6: Recruiting New Operators (with Images)
+<img width="1890" height="965" alt="image" src="https://github.com/user-attachments/assets/d4fc0a49-7205-4bf3-ae53-490b942fdea7" />
+
 1. Click the **+ RECRUIT OPERATOR** button on the top right of the main gallery (index.php).
 2. Fill out the Core Profile (Name, Rarity, Class) in add.php.
 3. Select and upload your image files for both the **Base Portrait** and optional **Elite 2 Portrait**.
 4. Click **Confirm Recruitment** to save the file paths to the database and upload the images into the `uploads/` directory.
 
 ### Step 7: Modifying or Dismissing Operator Records
+<img width="1906" height="967" alt="image" src="https://github.com/user-attachments/assets/2386fc47-7ace-4854-9054-7eb375404a18" />
+
 * **Modify Data**: While viewing an operator's dossier (details.php), click the **MODIFY DATA** button to edit existing stats, skills, or update image files in edit.php.
 * **Dismiss Operator**: Click the **[ DISMISS OPERATOR ]** link at the bottom of any operator card in the gallery to permanently remove them from the records with a confirmation check.
 
