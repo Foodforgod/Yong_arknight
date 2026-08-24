@@ -100,26 +100,28 @@ if ($view === 'phase2') {
                     <tr><td>DEPLOY COST</td><td class="stat-val" style="color: #ffb400;"><?php echo $active_cost; ?></td></tr>
                 </tbody>
             </table>
+            
             <div class="skills-section">
-    <h4><i class="fas fa-bolt"></i> COMBAT SKILLS</h4>
-    <?php for ($i = 1; $i <= 3; $i++): 
-        $s_name = $op["s{$i}_name"];
-        $s_img = $op["s{$i}_img"];
-        $s_desc = $op["s{$i}_desc"];
-        
-        if (!empty($s_name)): ?>
-        <div class="skill-card">
-            <div class="skill-icon">
-                <img src="<?php echo htmlspecialchars($s_img ?: 'https://placeholder.com'); ?>" alt="skill">
+                <h4><i class="fas fa-bolt"></i> COMBAT SKILLS</h4>
+                <?php for ($i = 1; $i <= 3; $i++): 
+                    // Using null coalescing operators (??) to prevent undefined key warnings if database columns are missing
+                    $s_name = $op["s{$i}_name"] ?? '';
+                    $s_img  = $op["s{$i}_img"]  ?? '';
+                    $s_desc = $op["s{$i}_desc"] ?? '';
+                    
+                    if (!empty($s_name)): ?>
+                    <div class="skill-card">
+                        <div class="skill-icon">
+                            <img src="<?php echo htmlspecialchars($s_img ?: 'https://placeholder.com'); ?>" alt="skill">
+                        </div>
+                        <div class="skill-info">
+                            <h5>SKILL 0<?php echo $i; ?>: <?php echo strtoupper($s_name); ?></h5>
+                            <p><?php echo nl2br(htmlspecialchars($s_desc)); ?></p>
+                        </div>
+                    </div>
+                    <?php endif; 
+                endfor; ?>
             </div>
-            <div class="skill-info">
-                <h5>SKILL 0<?php echo $i; ?>: <?php echo strtoupper($s_name); ?></h5>
-                <p><?php echo nl2br(htmlspecialchars($s_desc)); ?></p>
-            </div>
-        </div>
-        <?php endif; 
-    endfor; ?>
-</div>
   
             <div class="op-bio">
                 <h4>ARCHIVE DATA / BIOGRAPHY</h4>
@@ -130,7 +132,6 @@ if ($view === 'phase2') {
         </div>
     </div>
 
-    
     <script>
 document.addEventListener('DOMContentLoaded', function() {
     const img = document.getElementById('operator-img');
@@ -139,7 +140,6 @@ document.addEventListener('DOMContentLoaded', function() {
     let scale = 1;
     const speed = 0.2;
 
-    
     img.addEventListener('wheel', function(e) {
         e.preventDefault(); 
         if (e.deltaY < 0) {
@@ -151,7 +151,6 @@ document.addEventListener('DOMContentLoaded', function() {
         img.style.transform = "scale(" + scale + ")";
     }, { passive: false });
 
-    
     img.addEventListener('click', function() {
         if (scale !== 1) {
             scale = 1;
@@ -160,7 +159,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         img.style.transition = "transform 0.3s ease";
         img.style.transform = "scale(" + scale + ")";
-        
         
         setTimeout(function() {
             img.style.transition = "transform 0.1s ease";
