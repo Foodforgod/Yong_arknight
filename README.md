@@ -52,8 +52,11 @@ A web-based Arknights operator gallery and personnel database system built with 
 <img width="1917" height="1027" alt="image" src="https://github.com/user-attachments/assets/fe58e75c-4459-4817-9a68-aefb6f6e6db0" />
 2. Create a new database named **arknights_db**.
 <img width="1602" height="478" alt="image" src="https://github.com/user-attachments/assets/90223d3e-8de0-45a8-8353-9f8a5d373b39" />
+
 3. Import the provided SQL dump or create the `operators` table with text columns for image paths.
+
 <img width="860" height="45" alt="image" src="https://github.com/user-attachments/assets/23d4de9f-775c-4f0b-b494-c86aa8ccc9d5" />
+
 4. Create a folder named **uploads** inside your project root directory (`C:\xampp\htdocs\Yong_arknight\uploads\`) to properly store uploaded image files.
 
 ### Step 3: Accessing the Gallery
