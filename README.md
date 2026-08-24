@@ -42,14 +42,14 @@ A web-based Arknights operator gallery and personnel database system built with 
 
 ### Step 1: Local Environment Setup
 <img width="1912" height="990" alt="Screenshot 2026-08-24 150922" src="https://github.com/user-attachments/assets/a7441093-69cd-4ab7-ad26-42df2354d7cd" />
-
 1. Clone or place your repository inside your local server directory (such as XAMPP's htdocs folder).
 <img width="1917" height="1086" alt="image" src="https://github.com/user-attachments/assets/6cf5215d-84fd-4a90-ad0a-f729e581e94b" />
-
 2. Start Apache and MySQL services via your XAMPP control panel.
 
 ### Step 2: Set Up the Database & Folders
+<img width="1916" height="1086" alt="image" src="https://github.com/user-attachments/assets/01cace2a-7ecb-4323-a512-d665fe8a9a6c" />
 1. Open your browser and go to phpMyAdmin (http://localhost/phpmyadmin/).
+<img width="1917" height="1027" alt="image" src="https://github.com/user-attachments/assets/fe58e75c-4459-4817-9a68-aefb6f6e6db0" />
 2. Create a new database named **arknights_db**.
 3. Import the provided SQL dump or create the `operators` table with text columns for image paths.
 4. Create a folder named **uploads** inside your project root directory (`C:\xampp\htdocs\Yong_arknight\uploads\`) to properly store uploaded image files.
