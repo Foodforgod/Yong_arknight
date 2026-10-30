@@ -27,6 +27,8 @@
     <header class="main-header">
         <div class="logo">RHODES ISLAND ARCHIVES</div>
         <div class="nav-actions">
+            <!-- Added Spin & Storage Bag navigation button -->
+            <a href="gacha.php" class="btn-add" style="background: #ffb400; margin-right: 10px;">🎲 SPIN & BAG</a>
             <a href="add.php" class="btn-add">+ RECRUIT OPERATOR</a>
         </div>
     </header>
@@ -58,13 +60,12 @@
     $search = $_GET['search'] ?? '';
     $classFilter = $_GET['class_filter'] ?? '';
 
-   
     $sql = "SELECT * FROM operators WHERE 1=1";
     $params = [];
 
     if ($search != '') {
         $sql .= " AND name LIKE :search";
-        $params['search'] = "%$search%"; 
+        $params['search'] = "%$search%";
     }
     if ($classFilter != '') {
         $sql .= " AND class = :class";
@@ -81,16 +82,14 @@
     }
 
     while ($row = $stmt->fetch()) {
-        
-       
         if ($row['rarity'] == 6) {
-            $borderColor = '#ffb400'; 
+            $borderColor = '#ffb400';
         } elseif ($row['rarity'] == 5) {
-            $borderColor = '#e5b1ff'; 
+            $borderColor = '#e5b1ff';
         } elseif ($row['rarity'] == 4) {
-            $borderColor = '#29b6f6'; 
+            $borderColor = '#29b6f6';
         } else {
-            $borderColor = '#666666'; 
+            $borderColor = '#666666';
         }
         
         $hasE2 = !empty($row['image_path_e2']);
@@ -109,11 +108,18 @@
                 </div>
             </a>
 
-            <a href="delete.php?id=<?php echo $row['id']; ?>" 
-               onclick="return confirm('Are you sure you want to dismiss this operator?')" 
-               style="display: block; color: #ff4444; text-decoration: none; font-size: 11px; margin-top: 15px; border-top: 1px solid #333; padding-top: 10px; font-weight: bold;">
-               [ DISMISS OPERATOR ]
-            </a>
+            <!-- Action buttons: Edit Lore & Dismiss -->
+            <div style="margin-top: 15px; border-top: 1px solid #333; padding-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                <a href="admin_edit.php?id=<?php echo $row['id']; ?>" style="color: #ffb400; text-decoration: none; font-size: 11px; font-weight: bold;">
+                    ⚙️ EDIT LORE
+                </a>
+
+                <a href="delete.php?id=<?php echo $row['id']; ?>" 
+                   onclick="return confirm('Are you sure you want to dismiss this operator?')" 
+                   style="color: #ff4444; text-decoration: none; font-size: 11px; font-weight: bold;">
+                   [ DISMISS ]
+                </a>
+            </div>
         </div>
     <?php } ?>
     </div>
