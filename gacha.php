@@ -4,20 +4,86 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-$role = $_SESSION['role'] ?? 'guest';
+$role     = $_SESSION['role'] ?? 'guest';
 $username = $_SESSION['username'] ?? 'Guest';
-$userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+$userId   = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
 
 if (!isset($_SESSION['gacha_pity_6'])) {
     $_SESSION['gacha_pity_6'] = 0;
 }
+if (!isset($_SESSION['gacha_total_pulls'])) {
+    $_SESSION['gacha_total_pulls'] = 0;
+}
+
+function calculateSixStarRate(int $pity): int {
+    if ($pity <= 50) {
+        return 3;
+    }
+    return min(100, 3 + (($pity - 50) * 6));
+}
+
+function loadGachaPity(PDO $pdo, int $userId): array {
+    $sessionPity  = max(0, (int)($_SESSION['gacha_pity_6'] ?? 0));
+    $sessionTotal = max(0, (int)($_SESSION['gacha_total_pulls'] ?? 0));
+
+    try {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS gacha_pity (
+                user_id INT NOT NULL PRIMARY KEY,
+                pity_6 INT NOT NULL DEFAULT 0,
+                total_pulls INT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+
+        $stmt = $pdo->prepare("SELECT pity_6, total_pulls FROM gacha_pity WHERE user_id = ? LIMIT 1");
+        $stmt->execute([$userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($row) {
+            $pity  = max(0, (int)$row['pity_6']);
+            $total = max(0, (int)$row['total_pulls']);
+            $_SESSION['gacha_pity_6'] = $pity;
+            $_SESSION['gacha_total_pulls'] = $total;
+            return ['pity_6' => $pity, 'total_pulls' => $total, 'persisted_db' => true];
+        }
+
+        // Seed DB row from current session values if present
+        $ins = $pdo->prepare("INSERT INTO gacha_pity (user_id, pity_6, total_pulls) VALUES (?, ?, ?)");
+        $ins->execute([$userId, $sessionPity, $sessionTotal]);
+        return ['pity_6' => $sessionPity, 'total_pulls' => $sessionTotal, 'persisted_db' => true];
+    } catch (Throwable $e) {
+        return ['pity_6' => $sessionPity, 'total_pulls' => $sessionTotal, 'persisted_db' => false];
+    }
+}
+
+function saveGachaPity(PDO $pdo, int $userId, int $pity, int $totalPulls): bool {
+    $pity = max(0, $pity);
+    $totalPulls = max(0, $totalPulls);
+    $_SESSION['gacha_pity_6'] = $pity;
+    $_SESSION['gacha_total_pulls'] = $totalPulls;
+
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO gacha_pity (user_id, pity_6, total_pulls)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE pity_6 = VALUES(pity_6), total_pulls = VALUES(total_pulls)
+        ");
+        return $stmt->execute([$userId, $pity, $totalPulls]);
+    } catch (Throwable $e) {
+        return false;
+    }
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    if (ob_get_level()) {
+        ob_clean();
+    }
     header('Content-Type: application/json; charset=UTF-8');
     ini_set('display_errors', '0');
 
     try {
-        $action = $_POST['action'];
+        $action     = (string)$_POST['action'];
         $pull_count = ($action === 'ten') ? 10 : 1;
 
         $qtyCol = 'quantity';
@@ -30,7 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
             $hasUserIdCol = in_array('user_id', $colNames, true);
         } catch (Throwable $e) {
-            // Default schema
+            // Default schema fallback
         }
 
         $stmt = $pdo->query("SELECT * FROM operators");
@@ -41,16 +107,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             exit;
         }
 
+        $pityState  = loadGachaPity($pdo, $userId);
+        $pity       = (int)$pityState['pity_6'];
+        $totalPulls = (int)$pityState['total_pulls'];
+
         $results = [];
         $hasHighRarityInTen = false;
-        $pity = (int)($_SESSION['gacha_pity_6'] ?? 0);
 
         for ($i = 0; $i < $pull_count; $i++) {
             $pity++;
-            $sixRate = 3;
-            if ($pity > 50) {
-                $sixRate = min(100, 3 + (($pity - 50) * 6));
-            }
+            $totalPulls++;
+            $sixRate = calculateSixStarRate($pity);
 
             $rand = mt_rand(1, 100);
             if ($rand <= $sixRate) {
@@ -118,17 +185,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'name'   => (string)$selected_op['name'],
                 'rarity' => max(1, min(6, (int)$selected_op['rarity'])),
                 'class'  => (string)$selected_op['class'],
-                'image'  => !empty($selected_op['image_path_e2']) ? $selected_op['image_path_e2'] : $selected_op['image_path']
+                'image'  => !empty($selected_op['image_path_e2']) ? (string)$selected_op['image_path_e2'] : (string)$selected_op['image_path']
             ];
         }
 
-        $_SESSION['gacha_pity_6'] = $pity;
+        $savedToDb = saveGachaPity($pdo, $userId, $pity, $totalPulls);
 
         echo json_encode([
-            'status'  => 'success',
-            'results' => $results,
-            'pity_6'  => $pity,
-            'action'  => $action
+            'status'       => 'success',
+            'results'      => $results,
+            'pity_6'       => $pity,
+            'six_rate'     => calculateSixStarRate($pity),
+            'total_pulls'  => $totalPulls,
+            'persisted_db' => $savedToDb,
+            'action'       => $action
         ]);
     } catch (Throwable $e) {
         echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
@@ -142,7 +212,11 @@ try {
 } catch (Throwable $e) {
     $totalOpsCount = 0;
 }
-$currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
+
+$pityInfo       = loadGachaPity($pdo, $userId);
+$currentPity    = (int)$pityInfo['pity_6'];
+$currentTotal   = (int)$pityInfo['total_pulls'];
+$currentSixRate = calculateSixStarRate($currentPity);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -182,6 +256,14 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             text-align: center;
         }
 
+        .badges-row {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
         .banner-tag {
             display: inline-block;
             background: rgba(255, 180, 0, 0.14);
@@ -189,11 +271,10 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             color: #ffb400;
             font-size: 11px;
             font-weight: 800;
-            letter-spacing: 1.4px;
+            letter-spacing: 1.2px;
             padding: 5px 12px;
             border-radius: 999px;
             text-transform: uppercase;
-            margin: 0 4px 10px;
         }
         .pity-tag {
             display: inline-block;
@@ -206,7 +287,18 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             padding: 5px 12px;
             border-radius: 999px;
             text-transform: uppercase;
-            margin: 0 4px 10px;
+        }
+        .stats-tag {
+            display: inline-block;
+            background: rgba(148, 163, 184, 0.12);
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            color: #CBD5E1;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.9px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            text-transform: uppercase;
         }
 
         .gacha-shell h1 {
@@ -223,7 +315,7 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             color: #94A3B8;
             font-size: 14px;
             margin: 0 auto 24px;
-            max-width: 580px;
+            max-width: 600px;
             line-height: 1.6;
         }
 
@@ -433,6 +525,10 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             letter-spacing: 0.7px;
             text-transform: uppercase;
         }
+        .btn-again:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
         .btn-close {
             background: #ef4444;
             color: #fff;
@@ -476,17 +572,18 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
     </header>
 
     <main class="gacha-shell">
-        <div>
+        <div class="badges-row">
             <span class="banner-tag">PRTS Signal Scanner • <?= (int)$totalOpsCount ?> Operators in Pool</span>
-            <span class="pity-tag" id="pity-badge">6★ Pity: <?= $currentPity ?> / 50</span>
+            <span class="pity-tag" id="pity-badge">6★ Pity: <?= $currentPity ?> / 50 (<?= $currentSixRate ?>%)</span>
+            <span class="stats-tag" id="total-pulls-badge">Total Signals: <?= $currentTotal ?></span>
         </div>
         <h1>🎯 Arknights <span>Headhunting</span></h1>
         <p class="gacha-subtitle">
-            Transmit a recruitment signal to bring operators into Rhodes Island. Recruited personnel are automatically logged into your storage bag.
+            Transmit a recruitment signal to bring operators into Rhodes Island. Pity is saved automatically and recruited personnel are logged into your storage bag.
         </p>
 
         <div class="rates-strip">
-            <div class="rate-chip rate-6"><strong>3%</strong><span>6★ Elite</span></div>
+            <div class="rate-chip rate-6"><strong id="rate-six-display"><?= $currentSixRate ?>%</strong><span>6★ Elite (+6% after 50)</span></div>
             <div class="rate-chip rate-5"><strong>12%</strong><span>5★ Senior</span></div>
             <div class="rate-chip rate-4"><strong>35%</strong><span>4★ Standard</span></div>
             <div class="rate-chip rate-13"><strong>50%</strong><span>1★–3★ Recruit</span></div>
@@ -526,16 +623,38 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             if (againBtn) againBtn.disabled = disabled;
         }
 
-        function updatePityDisplay(pityVal) {
+        function updatePityDisplay(pityVal, sixRateVal, totalPullsVal) {
+            const pityNum = Number(pityVal) || 0;
+            const rateNum = typeof sixRateVal !== 'undefined'
+                ? Number(sixRateVal)
+                : (pityNum <= 50 ? 3 : Math.min(100, 3 + ((pityNum - 50) * 6)));
+
             const badge = document.getElementById('pity-badge');
-            if (badge && typeof pityVal !== 'undefined') {
-                badge.textContent = `6★ Pity: ${Number(pityVal) || 0} / 50`;
+            if (badge) {
+                badge.textContent = `6★ Pity: ${pityNum} / 50 (${rateNum}%)`;
+            }
+
+            const rateDisplay = document.getElementById('rate-six-display');
+            if (rateDisplay) {
+                rateDisplay.textContent = `${rateNum}%`;
+            }
+
+            if (typeof totalPullsVal !== 'undefined') {
+                const totalBadge = document.getElementById('total-pulls-badge');
+                if (totalBadge) {
+                    totalBadge.textContent = `Total Signals: ${Number(totalPullsVal) || 0}`;
+                }
             }
         }
 
         function executeGacha(actionType) {
             lastActionType = actionType;
             setPullButtonsDisabled(true);
+
+            const againBtn = document.getElementById('btn-pull-again');
+            if (againBtn) {
+                againBtn.textContent = actionType === 'ten' ? '🎲 Pull 10 Again' : '🎲 Pull 1 Again';
+            }
 
             const formData = new URLSearchParams();
             formData.append('action', actionType);
@@ -556,7 +675,7 @@ $currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
             })
             .then(data => {
                 if (data.status === 'success') {
-                    updatePityDisplay(data.pity_6);
+                    updatePityDisplay(data.pity_6, data.six_rate, data.total_pulls);
                     showResults(data.results || []);
                 } else {
                     alert('Gacha Error: ' + (data.message || 'Unknown error'));

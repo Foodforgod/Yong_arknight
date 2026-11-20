@@ -1,39 +1,65 @@
 <?php
 require_once 'db.php';
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['csrf_token'];
 
 $error = '';
 
 if (isset($_GET['logout'])) {
+    $_SESSION = [];
+    if (ini_get('session.use_cookies')) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'], $params['secure'], $params['httponly']);
+    }
     session_destroy();
     header("Location: login.php");
     exit;
 }
 
 if (isset($_GET['guest'])) {
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = 0;
     $_SESSION['username'] = 'Guest';
     $_SESSION['role'] = 'guest';
     $_SESSION['is_admin'] = false;
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     header("Location: index.php");
     exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = trim($_POST['username'] ?? '');
-    $password = trim($_POST['password'] ?? '');
-
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
-    $stmt->execute([$username]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($user && ($password === $user['password'] || password_verify($password, $user['password']))) {
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['role'] = $user['role'];
-        $_SESSION['is_admin'] = ($user['role'] === 'admin');
-        header("Location: index.php");
-        exit;
+    $postedToken = $_POST['csrf_token'] ?? '';
+    if (!is_string($postedToken) || !hash_equals($csrfToken, $postedToken)) {
+        $error = "Invalid session token. Please refresh and try again.";
     } else {
-        $error = "Invalid username or password.";
+        $username = trim($_POST['username'] ?? '');
+        $password = (string)($_POST['password'] ?? '');
+
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $storedPass = (string)($user['password'] ?? '');
+        $validPass = $user && (password_verify($password, $storedPass) || hash_equals($storedPass, $password));
+
+        if ($validPass) {
+            session_regenerate_id(true);
+            $_SESSION['user_id'] = (int)($user['id'] ?? 0);
+            $_SESSION['username'] = (string)$user['username'];
+            $_SESSION['role'] = (string)$user['role'];
+            $_SESSION['is_admin'] = ($user['role'] === 'admin');
+            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+            header("Location: index.php");
+            exit;
+        } else {
+            $error = "Invalid username or password.";
+        }
     }
 }
 ?>
@@ -69,6 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
             <div class="form-group">
                 <label>Username</label>
                 <input type="text" name="username" placeholder="admin or doctor" required autofocus>

@@ -36,6 +36,46 @@ try {
     // Ignore if columns already exist or insufficient permissions
 }
 
+function saveEditUpload(string $fieldName, array $allowedExts, int $opId, string $prefix, array &$uploadErrors, string $label, string $subdir = ''): ?string {
+    if (!isset($_FILES[$fieldName])) {
+        return null;
+    }
+    $errCode = (int)($_FILES[$fieldName]['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($errCode === UPLOAD_ERR_NO_FILE) {
+        return null;
+    }
+    if ($errCode !== UPLOAD_ERR_OK) {
+        $uploadErrors[] = "{$label} upload failed (error code {$errCode}). Check PHP upload limits if file is large.";
+        return null;
+    }
+
+    $dir = 'uploads' . ($subdir !== '' ? '/' . trim($subdir, '/') : '');
+    if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+        $uploadErrors[] = "Could not create upload directory '{$dir}'.";
+        return null;
+    }
+
+    $ext = strtolower(pathinfo((string)($_FILES[$fieldName]['name'] ?? ''), PATHINFO_EXTENSION));
+    if (!in_array($ext, $allowedExts, true)) {
+        $uploadErrors[] = "{$label} rejected: '.{$ext}' is not allowed (" . implode(', ', $allowedExts) . ").";
+        return null;
+    }
+
+    try {
+        $randSuffix = bin2hex(random_bytes(3));
+    } catch (Throwable $e) {
+        $randSuffix = (string)mt_rand(100, 999);
+    }
+
+    $target = $dir . '/' . $prefix . '_op_' . $opId . '_' . time() . '_' . $randSuffix . '.' . $ext;
+    if (!move_uploaded_file($_FILES[$fieldName]['tmp_name'], $target)) {
+        $uploadErrors[] = "Failed to save {$label} to '{$target}'. Check folder permissions.";
+        return null;
+    }
+
+    return $target;
+}
+
 $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if (!$id) {
     die("Error: Missing Operator ID.");
@@ -51,6 +91,7 @@ if (!$op) {
 
 $statusMessage = '';
 $statusType = '';
+$uploadErrors = [];
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $postedToken = $_POST['csrf_token'] ?? '';
@@ -64,6 +105,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $lore   = trim($_POST['lore'] ?? '');
 
         $img_url = trim($_POST['image_path'] ?? '');
+        if ($upBase = saveEditUpload('image_path_file', ['jpg', 'jpeg', 'png', 'webp', 'gif'], $id, 'op_base', $uploadErrors, 'Base Portrait')) {
+            $img_url = $upBase;
+        }
+
         $hp      = max(0, (int)($_POST['hp'] ?? 0));
         $atk     = max(0, (int)($_POST['atk'] ?? 0));
         $def     = max(0, (int)($_POST['def'] ?? 0));
@@ -71,18 +116,41 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $cost    = max(0, (int)($_POST['deploy_cost'] ?? 0));
 
         $img_url_e2 = trim($_POST['image_path_e2'] ?? '');
+        if ($upE2 = saveEditUpload('image_path_e2_file', ['jpg', 'jpeg', 'png', 'webp', 'gif'], $id, 'op_e2', $uploadErrors, 'Elite 2 Portrait')) {
+            $img_url_e2 = $upE2;
+        }
+
         $hp_e2      = !empty($_POST['hp_e2']) ? max(0, (int)$_POST['hp_e2']) : 0;
         $atk_e2     = !empty($_POST['atk_e2']) ? max(0, (int)$_POST['atk_e2']) : 0;
         $def_e2     = !empty($_POST['def_e2']) ? max(0, (int)$_POST['def_e2']) : 0;
         $block_e2   = !empty($_POST['block_count_e2']) ? max(0, (int)$_POST['block_count_e2']) : 0;
         $cost_e2    = !empty($_POST['deploy_cost_e2']) ? max(0, (int)$_POST['deploy_cost_e2']) : 0;
 
-        $wallpaper       = trim($_POST['wallpaper'] ?? '');
+        $wallpaper = trim($_POST['wallpaper'] ?? '');
+        if ($upWall = saveEditUpload('wallpaper_file', ['jpg', 'jpeg', 'png', 'webp', 'gif'], $id, 'bg_op', $uploadErrors, 'Wallpaper')) {
+            $wallpaper = $upWall;
+        }
+
         $video_url       = trim($_POST['video_url'] ?? '');
         $howto_video_url = trim($_POST['howto_video_url'] ?? '');
-        $stage_video     = trim($_POST['stage_video'] ?? '');
-        $deploy_video    = trim($_POST['deploy_video'] ?? '');
-        $attack_video    = trim($_POST['attack_video'] ?? '');
+        if ($upHowto = saveEditUpload('howto_video_file', ['mp4', 'webm'], $id, 'howto_op', $uploadErrors, 'How-to-Play Video')) {
+            $howto_video_url = $upHowto;
+        }
+
+        $stage_video = trim($_POST['stage_video'] ?? '');
+        if ($upStand = saveEditUpload('stage_video_file', ['mp4', 'webm'], $id, 'stage_op', $uploadErrors, 'Stand Video')) {
+            $stage_video = $upStand;
+        }
+
+        $deploy_video = trim($_POST['deploy_video'] ?? '');
+        if ($upDeploy = saveEditUpload('deploy_video_file', ['mp4', 'webm'], $id, 'deploy_op', $uploadErrors, 'Deploy Video')) {
+            $deploy_video = $upDeploy;
+        }
+
+        $attack_video = trim($_POST['attack_video'] ?? '');
+        if ($upAttack = saveEditUpload('attack_video_file', ['mp4', 'webm'], $id, 'attack_op', $uploadErrors, 'Attack Video')) {
+            $attack_video = $upAttack;
+        }
 
         $s1_name = trim($_POST['s1_name'] ?? '');
         $s1_img  = trim($_POST['s1_img'] ?? '');
@@ -119,8 +187,49 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         ];
 
         if ($updateStmt->execute($params)) {
+            if (isset($_FILES['mp3_files']) && is_array($_FILES['mp3_files']['name'])) {
+                if (!is_dir('uploads/sounds')) {
+                    @mkdir('uploads/sounds', 0755, true);
+                }
+                foreach ($_FILES['mp3_files']['name'] as $index => $filename) {
+                    $audioErr = (int)($_FILES['mp3_files']['error'][$index] ?? UPLOAD_ERR_NO_FILE);
+                    if ($audioErr === UPLOAD_ERR_NO_FILE) {
+                        continue;
+                    }
+                    if ($audioErr !== UPLOAD_ERR_OK) {
+                        $uploadErrors[] = "Voice file '" . basename((string)$filename) . "' failed (code {$audioErr}).";
+                        continue;
+                    }
+                    $ext = strtolower(pathinfo((string)$filename, PATHINFO_EXTENSION));
+                    if (!in_array($ext, ['mp3', 'wav'], true)) {
+                        $uploadErrors[] = "Voice file '" . basename((string)$filename) . "' skipped (only MP3/WAV allowed).";
+                        continue;
+                    }
+                    $soundName = pathinfo((string)$filename, PATHINFO_FILENAME);
+                    try {
+                        $randSuffix = bin2hex(random_bytes(3));
+                    } catch (Throwable $e) {
+                        $randSuffix = (string)mt_rand(100, 999);
+                    }
+                    $audioPath = 'uploads/sounds/sound_' . $id . '_' . time() . '_' . $index . '_' . $randSuffix . '.' . $ext;
+                    if (move_uploaded_file($_FILES['mp3_files']['tmp_name'][$index], $audioPath)) {
+                        try {
+                            $sndIns = $pdo->prepare("INSERT INTO operator_sounds (operator_id, sound_name, file_path) VALUES (?, ?, ?)");
+                            $sndIns->execute([$id, $soundName, $audioPath]);
+                        } catch (Throwable $e) {
+                            // Ignore if table not present
+                        }
+                    } else {
+                        $uploadErrors[] = "Failed to move voice file '" . basename((string)$filename) . "'.";
+                    }
+                }
+            }
+
             $statusType = 'success';
-            $statusMessage = '[SUCCESS] Dossier updated. Redirecting to details...';
+            $statusMessage = !empty($uploadErrors)
+                ? '[PARTIAL] Dossier updated, but some uploads had issues: ' . implode(' | ', $uploadErrors)
+                : '[SUCCESS] Dossier updated. Redirecting to details...';
+
             $refreshStmt = $pdo->prepare("SELECT * FROM operators WHERE id = ?");
             $refreshStmt->execute([$id]);
             $op = $refreshStmt->fetch(PDO::FETCH_ASSOC);
@@ -308,14 +417,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             <div class="alert-banner <?php echo $statusType === 'success' ? 'alert-success' : 'alert-error'; ?>">
                 <?php echo htmlspecialchars($statusMessage); ?>
             </div>
-            <?php if ($statusType === 'success'): ?>
+            <?php if ($statusType === 'success' && empty($uploadErrors)): ?>
                 <script>
                     setTimeout(() => { window.location.href = 'details.php?id=<?php echo $id; ?>'; }, 1200);
                 </script>
             <?php endif; ?>
         <?php endif; ?>
 
-        <form method="POST">
+        <form method="POST" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
 
             <div class="form-section">
@@ -353,6 +462,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 <div class="section-title">Base / Elite 1 Records</div>
                 <label class="field-label">Base Image URL / Path</label>
                 <input type="text" name="image_path" value="<?php echo htmlspecialchars($op['image_path'] ?? ''); ?>" placeholder="Base Image URL" required>
+                <label class="field-label">Or Upload Base Portrait (JPG / PNG / WEBP / GIF)</label>
+                <input type="file" name="image_path_file" accept=".jpg,.jpeg,.png,.webp,.gif">
 
                 <div class="grid-inputs">
                     <div>
@@ -382,6 +493,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 <div class="section-title">Elite 2 Modification (Optional)</div>
                 <label class="field-label">Elite 2 Image URL / Path</label>
                 <input type="text" name="image_path_e2" value="<?php echo htmlspecialchars($op['image_path_e2'] ?? ''); ?>" placeholder="Elite 2 Image URL">
+                <label class="field-label">Or Upload Elite 2 Portrait (JPG / PNG / WEBP / GIF)</label>
+                <input type="file" name="image_path_e2_file" accept=".jpg,.jpeg,.png,.webp,.gif">
 
                 <div class="grid-inputs">
                     <div>
@@ -420,9 +533,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             </div>
 
             <div class="form-section">
-                <h3>Wallpaper & Stage Media</h3>
+                <h3>Wallpaper, Voice & Stage Media</h3>
                 <label class="field-label">Custom Wallpaper URL / Path</label>
                 <input type="text" name="wallpaper" value="<?php echo htmlspecialchars($op['wallpaper'] ?? ''); ?>" placeholder="uploads/bg_op.jpg or https://...">
+                <label class="field-label">Or Upload Wallpaper Image (JPG / PNG / WEBP / GIF)</label>
+                <input type="file" name="wallpaper_file" accept=".jpg,.jpeg,.png,.webp,.gif">
 
                 <div class="grid-inputs">
                     <div>
@@ -432,20 +547,27 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                     <div>
                         <label class="field-label">How to Play Video (YouTube / MP4)</label>
                         <input type="text" name="howto_video_url" value="<?php echo htmlspecialchars($op['howto_video_url'] ?? ''); ?>" placeholder="https://... or uploads/howto.mp4">
+                        <input type="file" name="howto_video_file" accept=".mp4,.webm">
                     </div>
                     <div>
                         <label class="field-label">Deploy Video (MP4 / WEBM)</label>
                         <input type="text" name="deploy_video" value="<?php echo htmlspecialchars($op['deploy_video'] ?? ''); ?>" placeholder="uploads/deploy.mp4">
+                        <input type="file" name="deploy_video_file" accept=".mp4,.webm">
                     </div>
                     <div>
                         <label class="field-label">Stand / Idle Video (MP4 / WEBM)</label>
                         <input type="text" name="stage_video" value="<?php echo htmlspecialchars($op['stage_video'] ?? ''); ?>" placeholder="uploads/stand.mp4">
+                        <input type="file" name="stage_video_file" accept=".mp4,.webm">
                     </div>
                     <div>
                         <label class="field-label">Attack Video (MP4 / WEBM)</label>
                         <input type="text" name="attack_video" value="<?php echo htmlspecialchars($op['attack_video'] ?? ''); ?>" placeholder="uploads/attack.mp4">
+                        <input type="file" name="attack_video_file" accept=".mp4,.webm">
                     </div>
                 </div>
+
+                <label class="field-label" style="margin-top: 6px;">Add Voice Lines (MP3 / WAV)</label>
+                <input type="file" name="mp3_files[]" accept=".mp3,.wav,audio/mpeg,audio/wav" multiple style="margin-bottom: 0;">
             </div>
 
             <div class="form-section">
