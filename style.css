@@ -221,6 +221,13 @@ input, select, textarea {
 
 .grid-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+.glass-panel {
+    background: rgba(13, 22, 34, 0.9);
+    backdrop-filter: blur(12px);
+    border: 1px solid #1E2E42;
+    border-radius: 10px;
+}
+
 .back-to-top {
     position: fixed;
     bottom: 30px; right: 30px;

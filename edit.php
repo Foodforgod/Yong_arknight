@@ -4,8 +4,14 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Enforce admin role if session role is set; allow if unauthenticated session isn't blocking legacy links
-if (isset($_SESSION['role']) && $_SESSION['role'] !== 'admin') {
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['csrf_token'];
+
+$role = $_SESSION['role'] ?? 'guest';
+if ($role !== 'admin') {
+    http_response_code(403);
     die("<div style='background:#0B131D; color:#EF4444; text-align:center; padding:60px; font-family:sans-serif;'>
         <h2>⛔ ACCESS DENIED: ADMINISTRATOR PRIVILEGES REQUIRED</h2>
         <p style='color:#94A3B8;'>Only administrators can modify operator records.</p>
@@ -13,7 +19,6 @@ if (isset($_SESSION['role']) && $_SESSION['role'] !== 'admin') {
     </div>");
 }
 
-// Safely ensure optional media/animation columns exist
 try {
     $howtoColStmt = $pdo->query("SHOW COLUMNS FROM operators LIKE 'howto_video_url'");
     if ($howtoColStmt->rowCount() === 0) {
@@ -48,75 +53,81 @@ $statusMessage = '';
 $statusType = '';
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    $name   = trim($_POST['name'] ?? '');
-    $rarity = (int)($_POST['rarity'] ?? 1);
-    $class  = trim($_POST['class'] ?? '');
-    $lore   = trim($_POST['lore'] ?? '');
-
-    $img_url = trim($_POST['image_path'] ?? '');
-    $hp      = (int)($_POST['hp'] ?? 0);
-    $atk     = (int)($_POST['atk'] ?? 0);
-    $def     = (int)($_POST['def'] ?? 0);
-    $block   = (int)($_POST['block_count'] ?? 1);
-    $cost    = (int)($_POST['deploy_cost'] ?? 0);
-
-    $img_url_e2 = trim($_POST['image_path_e2'] ?? '');
-    $hp_e2      = !empty($_POST['hp_e2']) ? (int)$_POST['hp_e2'] : 0;
-    $atk_e2     = !empty($_POST['atk_e2']) ? (int)$_POST['atk_e2'] : 0;
-    $def_e2     = !empty($_POST['def_e2']) ? (int)$_POST['def_e2'] : 0;
-    $block_e2   = !empty($_POST['block_count_e2']) ? (int)$_POST['block_count_e2'] : 0;
-    $cost_e2    = !empty($_POST['deploy_cost_e2']) ? (int)$_POST['deploy_cost_e2'] : 0;
-
-    $wallpaper       = trim($_POST['wallpaper'] ?? '');
-    $video_url       = trim($_POST['video_url'] ?? '');
-    $howto_video_url = trim($_POST['howto_video_url'] ?? '');
-    $stage_video     = trim($_POST['stage_video'] ?? '');
-    $deploy_video    = trim($_POST['deploy_video'] ?? '');
-    $attack_video    = trim($_POST['attack_video'] ?? '');
-
-    $s1_name = trim($_POST['s1_name'] ?? '');
-    $s1_img  = trim($_POST['s1_img'] ?? '');
-    $s1_desc = trim($_POST['s1_desc'] ?? '');
-
-    $s2_name = trim($_POST['s2_name'] ?? '');
-    $s2_img  = trim($_POST['s2_img'] ?? '');
-    $s2_desc = trim($_POST['s2_desc'] ?? '');
-
-    $s3_name = trim($_POST['s3_name'] ?? '');
-    $s3_img  = trim($_POST['s3_img'] ?? '');
-    $s3_desc = trim($_POST['s3_desc'] ?? '');
-
-    $sql = "UPDATE operators SET
-                name=?, rarity=?, class=?, lore=?,
-                image_path=?, hp=?, atk=?, def=?, block_count=?, deploy_cost=?,
-                image_path_e2=?, hp_e2=?, atk_e2=?, def_e2=?, block_count_e2=?, deploy_cost_e2=?,
-                wallpaper=?, video_url=?, howto_video_url=?, stage_video=?, deploy_video=?, attack_video=?,
-                s1_name=?, s1_img=?, s1_desc=?,
-                s2_name=?, s2_img=?, s2_desc=?,
-                s3_name=?, s3_img=?, s3_desc=?
-            WHERE id=?";
-
-    $updateStmt = $pdo->prepare($sql);
-    $params = [
-        $name, $rarity, $class, $lore,
-        $img_url, $hp, $atk, $def, $block, $cost,
-        $img_url_e2, $hp_e2, $atk_e2, $def_e2, $block_e2, $cost_e2,
-        $wallpaper, $video_url, $howto_video_url, $stage_video, $deploy_video, $attack_video,
-        $s1_name, $s1_img, $s1_desc,
-        $s2_name, $s2_img, $s2_desc,
-        $s3_name, $s3_img, $s3_desc,
-        $id
-    ];
-
-    if ($updateStmt->execute($params)) {
-        $statusType = 'success';
-        $statusMessage = '[SUCCESS] Dossier updated. Redirecting to details...';
-        $refreshStmt = $pdo->prepare("SELECT * FROM operators WHERE id = ?");
-        $refreshStmt->execute([$id]);
-        $op = $refreshStmt->fetch(PDO::FETCH_ASSOC);
-    } else {
+    $postedToken = $_POST['csrf_token'] ?? '';
+    if (!is_string($postedToken) || !hash_equals($csrfToken, $postedToken)) {
         $statusType = 'error';
-        $statusMessage = '[ERROR] Failed to update record.';
+        $statusMessage = '[SECURITY] Invalid or missing CSRF token. Please refresh and try again.';
+    } else {
+        $name   = trim($_POST['name'] ?? '');
+        $rarity = max(1, min(6, (int)($_POST['rarity'] ?? 1)));
+        $class  = trim($_POST['class'] ?? '');
+        $lore   = trim($_POST['lore'] ?? '');
+
+        $img_url = trim($_POST['image_path'] ?? '');
+        $hp      = max(0, (int)($_POST['hp'] ?? 0));
+        $atk     = max(0, (int)($_POST['atk'] ?? 0));
+        $def     = max(0, (int)($_POST['def'] ?? 0));
+        $block   = max(0, (int)($_POST['block_count'] ?? 1));
+        $cost    = max(0, (int)($_POST['deploy_cost'] ?? 0));
+
+        $img_url_e2 = trim($_POST['image_path_e2'] ?? '');
+        $hp_e2      = !empty($_POST['hp_e2']) ? max(0, (int)$_POST['hp_e2']) : 0;
+        $atk_e2     = !empty($_POST['atk_e2']) ? max(0, (int)$_POST['atk_e2']) : 0;
+        $def_e2     = !empty($_POST['def_e2']) ? max(0, (int)$_POST['def_e2']) : 0;
+        $block_e2   = !empty($_POST['block_count_e2']) ? max(0, (int)$_POST['block_count_e2']) : 0;
+        $cost_e2    = !empty($_POST['deploy_cost_e2']) ? max(0, (int)$_POST['deploy_cost_e2']) : 0;
+
+        $wallpaper       = trim($_POST['wallpaper'] ?? '');
+        $video_url       = trim($_POST['video_url'] ?? '');
+        $howto_video_url = trim($_POST['howto_video_url'] ?? '');
+        $stage_video     = trim($_POST['stage_video'] ?? '');
+        $deploy_video    = trim($_POST['deploy_video'] ?? '');
+        $attack_video    = trim($_POST['attack_video'] ?? '');
+
+        $s1_name = trim($_POST['s1_name'] ?? '');
+        $s1_img  = trim($_POST['s1_img'] ?? '');
+        $s1_desc = trim($_POST['s1_desc'] ?? '');
+
+        $s2_name = trim($_POST['s2_name'] ?? '');
+        $s2_img  = trim($_POST['s2_img'] ?? '');
+        $s2_desc = trim($_POST['s2_desc'] ?? '');
+
+        $s3_name = trim($_POST['s3_name'] ?? '');
+        $s3_img  = trim($_POST['s3_img'] ?? '');
+        $s3_desc = trim($_POST['s3_desc'] ?? '');
+
+        $sql = "UPDATE operators SET
+                    name=?, rarity=?, class=?, lore=?,
+                    image_path=?, hp=?, atk=?, def=?, block_count=?, deploy_cost=?,
+                    image_path_e2=?, hp_e2=?, atk_e2=?, def_e2=?, block_count_e2=?, deploy_cost_e2=?,
+                    wallpaper=?, video_url=?, howto_video_url=?, stage_video=?, deploy_video=?, attack_video=?,
+                    s1_name=?, s1_img=?, s1_desc=?,
+                    s2_name=?, s2_img=?, s2_desc=?,
+                    s3_name=?, s3_img=?, s3_desc=?
+                WHERE id=?";
+
+        $updateStmt = $pdo->prepare($sql);
+        $params = [
+            $name, $rarity, $class, $lore,
+            $img_url, $hp, $atk, $def, $block, $cost,
+            $img_url_e2, $hp_e2, $atk_e2, $def_e2, $block_e2, $cost_e2,
+            $wallpaper, $video_url, $howto_video_url, $stage_video, $deploy_video, $attack_video,
+            $s1_name, $s1_img, $s1_desc,
+            $s2_name, $s2_img, $s2_desc,
+            $s3_name, $s3_img, $s3_desc,
+            $id
+        ];
+
+        if ($updateStmt->execute($params)) {
+            $statusType = 'success';
+            $statusMessage = '[SUCCESS] Dossier updated. Redirecting to details...';
+            $refreshStmt = $pdo->prepare("SELECT * FROM operators WHERE id = ?");
+            $refreshStmt->execute([$id]);
+            $op = $refreshStmt->fetch(PDO::FETCH_ASSOC);
+        } else {
+            $statusType = 'error';
+            $statusMessage = '[ERROR] Failed to update record.';
+        }
     }
 }
 ?>
@@ -305,6 +316,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         <?php endif; ?>
 
         <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
+
             <div class="form-section">
                 <h3>Core Identification</h3>
                 <label class="field-label">Operator Name</label>

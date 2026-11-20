@@ -43,6 +43,19 @@ if (!$op) {
     die("<div style='background:#070B10; color:#F8FAFC; text-align:center; padding:60px; font-family:sans-serif;'><h2>Error: Operator not found.</h2><a href='index.php' style='color:#ffb400;'>Return to Index</a></div>");
 }
 
+// Fetch another random operator ID for quick hopping
+$randomId = $id;
+try {
+    $randStmt = $pdo->prepare("SELECT id FROM operators WHERE id != ? ORDER BY RAND() LIMIT 1");
+    $randStmt->execute([$id]);
+    $randRow = $randStmt->fetch(PDO::FETCH_ASSOC);
+    if ($randRow && !empty($randRow['id'])) {
+        $randomId = (int)$randRow['id'];
+    }
+} catch (Throwable $e) {
+    $randomId = $id;
+}
+
 $has_e2 = !empty($op['image_path_e2']);
 if ($view === 'phase2' && !$has_e2) {
     $view = 'phase0';
@@ -80,7 +93,6 @@ if ($rarityInt === 6) {
 $custom_wallpaper = trim($op['wallpaper'] ?? '');
 $safe_wallpaper = htmlspecialchars($custom_wallpaper, ENT_QUOTES, 'UTF-8');
 
-// Strictly extract YouTube embed URL ONLY (ignores local .mp4 / .webm files)
 function getYoutubeEmbedOnly($url) {
     if (empty($url)) return '';
     if (preg_match('/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/', $url, $matches)) {
@@ -89,7 +101,6 @@ function getYoutubeEmbedOnly($url) {
     return '';
 }
 
-// Render either a YouTube iframe or an HTML5 MP4/WEBM video player for "How to Play"
 function renderHowToVideo($url, $title = 'How to Play Video') {
     $url = trim((string)$url);
     if ($url === '') return '';
@@ -500,6 +511,7 @@ $comments = $comments_stmt->fetchAll(PDO::FETCH_ASSOC);
     <header class="main-header">
         <div class="logo">OPERATOR DOSSIER</div>
         <div class="header-actions">
+            <a href="details.php?id=<?php echo $randomId; ?>" class="btn-add" style="background: rgba(255, 180, 0, 0.16); color: #ffb400; border: 1px solid #ffb400;">🎲 RANDOM OP</a>
             <a href="ai_talking.php?id=<?php echo $id; ?>" class="btn-add" style="background: #00bcd4; color: #070B10; font-weight: bold;">💬 AI TALKING</a>
             <?php if ($role === 'admin'): ?>
                 <a href="admin_edit.php?id=<?php echo $id; ?>" class="btn-add" style="background: #E59811; color: #070B10;">⚙️ EDIT (ADMIN)</a>

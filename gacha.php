@@ -6,6 +6,11 @@ if (session_status() === PHP_SESSION_NONE) {
 
 $role = $_SESSION['role'] ?? 'guest';
 $username = $_SESSION['username'] ?? 'Guest';
+$userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+
+if (!isset($_SESSION['gacha_pity_6'])) {
+    $_SESSION['gacha_pity_6'] = 0;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json; charset=UTF-8');
@@ -15,16 +20,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $action = $_POST['action'];
         $pull_count = ($action === 'ten') ? 10 : 1;
 
-        // Detect whether user_inventory uses quantity or count
         $qtyCol = 'quantity';
+        $hasUserIdCol = false;
         try {
             $colsStmt = $pdo->query("SHOW COLUMNS FROM user_inventory");
             $colNames = array_column($colsStmt->fetchAll(PDO::FETCH_ASSOC), 'Field');
             if (!in_array('quantity', $colNames, true) && in_array('count', $colNames, true)) {
                 $qtyCol = 'count';
             }
+            $hasUserIdCol = in_array('user_id', $colNames, true);
         } catch (Throwable $e) {
-            // Default to quantity
+            // Default schema
         }
 
         $stmt = $pdo->query("SELECT * FROM operators");
@@ -37,11 +43,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         $results = [];
         $hasHighRarityInTen = false;
+        $pity = (int)($_SESSION['gacha_pity_6'] ?? 0);
 
         for ($i = 0; $i < $pull_count; $i++) {
+            $pity++;
+            $sixRate = 3;
+            if ($pity > 50) {
+                $sixRate = min(100, 3 + (($pity - 50) * 6));
+            }
+
             $rand = mt_rand(1, 100);
-            if ($rand <= 3) {
+            if ($rand <= $sixRate) {
                 $target_rarity = 6;
+                $pity = 0;
             } elseif ($rand <= 15) {
                 $target_rarity = 5;
             } elseif ($rand <= 50) {
@@ -50,9 +64,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $target_rarity = mt_rand(1, 3);
             }
 
-            // Guarantee at least one 5★ or 6★ on the final card of a 10-pull if none appeared yet
             if ($pull_count === 10 && $i === 9 && !$hasHighRarityInTen) {
                 $target_rarity = (mt_rand(1, 100) <= 20) ? 6 : 5;
+                if ($target_rarity === 6) {
+                    $pity = 0;
+                }
             }
 
             if ($target_rarity >= 5) {
@@ -68,19 +84,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $op_id = (int)$selected_op['id'];
 
             try {
-                $check = $pdo->prepare("SELECT * FROM user_inventory WHERE operator_id = ? LIMIT 1");
-                $check->execute([$op_id]);
-                $existingRow = $check->fetch(PDO::FETCH_ASSOC);
+                if ($hasUserIdCol) {
+                    $check = $pdo->prepare("SELECT id FROM user_inventory WHERE operator_id = ? AND user_id = ? LIMIT 1");
+                    $check->execute([$op_id, $userId]);
+                    $existingRow = $check->fetch(PDO::FETCH_ASSOC);
 
-                if ($existingRow) {
-                    $up = $pdo->prepare("UPDATE user_inventory SET {$qtyCol} = {$qtyCol} + 1 WHERE operator_id = ?");
-                    $up->execute([$op_id]);
+                    if ($existingRow) {
+                        $up = $pdo->prepare("UPDATE user_inventory SET {$qtyCol} = {$qtyCol} + 1 WHERE operator_id = ? AND user_id = ?");
+                        $up->execute([$op_id, $userId]);
+                    } else {
+                        $ins = $pdo->prepare("INSERT INTO user_inventory (user_id, operator_id, {$qtyCol}) VALUES (?, ?, 1)");
+                        $ins->execute([$userId, $op_id]);
+                    }
                 } else {
-                    $ins = $pdo->prepare("INSERT INTO user_inventory (operator_id, {$qtyCol}) VALUES (?, 1)");
-                    $ins->execute([$op_id]);
+                    $check = $pdo->prepare("SELECT id FROM user_inventory WHERE operator_id = ? LIMIT 1");
+                    $check->execute([$op_id]);
+                    $existingRow = $check->fetch(PDO::FETCH_ASSOC);
+
+                    if ($existingRow) {
+                        $up = $pdo->prepare("UPDATE user_inventory SET {$qtyCol} = {$qtyCol} + 1 WHERE operator_id = ?");
+                        $up->execute([$op_id]);
+                    } else {
+                        $ins = $pdo->prepare("INSERT INTO user_inventory (operator_id, {$qtyCol}) VALUES (?, 1)");
+                        $ins->execute([$op_id]);
+                    }
                 }
             } catch (Throwable $invErr) {
-                // Ignore inventory write errors so headhunting UI still displays results
+                // Keep gacha response flowing even if inventory write fails
             }
 
             $results[] = [
@@ -92,7 +122,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             ];
         }
 
-        echo json_encode(['status' => 'success', 'results' => $results]);
+        $_SESSION['gacha_pity_6'] = $pity;
+
+        echo json_encode([
+            'status'  => 'success',
+            'results' => $results,
+            'pity_6'  => $pity,
+            'action'  => $action
+        ]);
     } catch (Throwable $e) {
         echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
     }
@@ -105,6 +142,7 @@ try {
 } catch (Throwable $e) {
     $totalOpsCount = 0;
 }
+$currentPity = (int)($_SESSION['gacha_pity_6'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -155,7 +193,20 @@ try {
             padding: 5px 12px;
             border-radius: 999px;
             text-transform: uppercase;
-            margin-bottom: 10px;
+            margin: 0 4px 10px;
+        }
+        .pity-tag {
+            display: inline-block;
+            background: rgba(0, 188, 212, 0.14);
+            border: 1px solid rgba(0, 188, 212, 0.45);
+            color: #38BDF8;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            text-transform: uppercase;
+            margin: 0 4px 10px;
         }
 
         .gacha-shell h1 {
@@ -166,7 +217,6 @@ try {
             letter-spacing: 1.5px;
             text-transform: uppercase;
         }
-
         .gacha-shell h1 span { color: #ffb400; }
 
         .gacha-subtitle {
@@ -371,6 +421,18 @@ try {
             flex-wrap: wrap;
             justify-content: center;
         }
+        .btn-again {
+            background: #ffb400;
+            color: #070B10;
+            padding: 10px 22px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: 0.7px;
+            text-transform: uppercase;
+        }
         .btn-close {
             background: #ef4444;
             color: #fff;
@@ -414,7 +476,10 @@ try {
     </header>
 
     <main class="gacha-shell">
-        <div class="banner-tag">PRTS Signal Scanner • <?= (int)$totalOpsCount ?> Operators in Pool</div>
+        <div>
+            <span class="banner-tag">PRTS Signal Scanner • <?= (int)$totalOpsCount ?> Operators in Pool</span>
+            <span class="pity-tag" id="pity-badge">6★ Pity: <?= $currentPity ?> / 50</span>
+        </div>
         <h1>🎯 Arknights <span>Headhunting</span></h1>
         <p class="gacha-subtitle">
             Transmit a recruitment signal to bring operators into Rhodes Island. Recruited personnel are automatically logged into your storage bag.
@@ -445,18 +510,31 @@ try {
         </div>
         <div class="result-grid" id="result-grid"></div>
         <div class="modal-actions">
+            <button type="button" class="btn-again" id="btn-pull-again" onclick="pullAgain()">🎲 Pull Again</button>
             <a href="bag.php" class="btn-bag-link">📦 Open Storage Bag</a>
             <button type="button" class="btn-close" onclick="closeModal()">Confirm</button>
         </div>
     </div>
 
     <script>
+        let lastActionType = 'single';
+
         function setPullButtonsDisabled(disabled) {
             document.getElementById('btn-single').disabled = disabled;
             document.getElementById('btn-ten').disabled = disabled;
+            const againBtn = document.getElementById('btn-pull-again');
+            if (againBtn) againBtn.disabled = disabled;
+        }
+
+        function updatePityDisplay(pityVal) {
+            const badge = document.getElementById('pity-badge');
+            if (badge && typeof pityVal !== 'undefined') {
+                badge.textContent = `6★ Pity: ${Number(pityVal) || 0} / 50`;
+            }
         }
 
         function executeGacha(actionType) {
+            lastActionType = actionType;
             setPullButtonsDisabled(true);
 
             const formData = new URLSearchParams();
@@ -478,6 +556,7 @@ try {
             })
             .then(data => {
                 if (data.status === 'success') {
+                    updatePityDisplay(data.pity_6);
                     showResults(data.results || []);
                 } else {
                     alert('Gacha Error: ' + (data.message || 'Unknown error'));
@@ -490,6 +569,10 @@ try {
             .finally(() => {
                 setPullButtonsDisabled(false);
             });
+        }
+
+        function pullAgain() {
+            executeGacha(lastActionType);
         }
 
         function showResults(results) {

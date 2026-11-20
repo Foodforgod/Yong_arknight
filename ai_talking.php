@@ -1,801 +1,842 @@
 <?php
-session_start();
 require_once 'db.php';
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-// Ensure operators.deploy_video and attack_video columns exist
+$role = $_SESSION['role'] ?? 'guest';
+$username = $_SESSION['username'] ?? 'Guest';
+
+$id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+if ($id <= 0) {
+    die("Error: Invalid Operator ID.");
+}
+
 try {
-    $deployColStmt = $pdo->query("SHOW COLUMNS FROM operators LIKE 'deploy_video'");
-    if ($deployColStmt->rowCount() === 0) {
+    $colCheck = $pdo->query("SHOW COLUMNS FROM operators LIKE 'deploy_video'");
+    if ($colCheck->rowCount() === 0) {
         $pdo->exec("ALTER TABLE operators ADD COLUMN deploy_video VARCHAR(500) NULL DEFAULT NULL AFTER stage_video");
     }
-    $attackColStmt = $pdo->query("SHOW COLUMNS FROM operators LIKE 'attack_video'");
-    if ($attackColStmt->rowCount() === 0) {
+    $colCheckAtk = $pdo->query("SHOW COLUMNS FROM operators LIKE 'attack_video'");
+    if ($colCheckAtk->rowCount() === 0) {
         $pdo->exec("ALTER TABLE operators ADD COLUMN attack_video VARCHAR(500) NULL DEFAULT NULL AFTER deploy_video");
     }
 } catch (Throwable $e) {
-    // Ignore if columns already exist or insufficient permissions
+    // Ignore if already exists
 }
 
-$id = isset($_GET['id']) ? (int)$_GET['id'] : 1;
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS operator_sounds (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        operator_id INT NOT NULL,
+        sound_name LONGTEXT NULL,
+        file_path VARCHAR(500) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $sndCol = $pdo->query("SHOW COLUMNS FROM operator_sounds LIKE 'sound_name'");
+    if ($sndCol->rowCount() > 0) {
+        $colInfo = $sndCol->fetch(PDO::FETCH_ASSOC);
+        if (stripos($colInfo['Type'] ?? '', 'longtext') === false) {
+            $pdo->exec("ALTER TABLE operator_sounds MODIFY COLUMN sound_name LONGTEXT NULL");
+        }
+    }
+} catch (Throwable $e) {
+    // Ignore if table exists
+}
+
 $stmt = $pdo->prepare("SELECT * FROM operators WHERE id = ?");
 $stmt->execute([$id]);
 $op = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$op) {
-    die("<div style='color: white; text-align: center; margin-top: 50px;'><h2>Error: Operator not found.</h2><a href='index.php' style='color: #ffb400;'>Return to Index</a></div>");
+    die("Error: Operator not found.");
 }
 
-$raw_name = $op['name'] ?? 'Operator';
-$safe_char_name = html_entity_decode(htmlspecialchars($raw_name, ENT_QUOTES, 'UTF-8'), ENT_QUOTES, 'UTF-8');
+$soundsStmt = $pdo->prepare("SELECT * FROM operator_sounds WHERE operator_id = ? ORDER BY id ASC");
+$soundsStmt->execute([$id]);
+$operatorSounds = $soundsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-if (isset($_GET['reset_chat'])) {
-    $_SESSION['chat_history'] = [
-        ["sender" => "char", "text" => "Ah, Doctor. Our logs have been cleared. What's our next move?"]
-    ];
-    header("Location: ai_talking.php?id=" . $id);
+if (!isset($_SESSION['ai_engine'])) {
+    $_SESSION['ai_engine'] = 'ollama';
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_engine'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    $_SESSION['ai_engine'] = ($_SESSION['ai_engine'] === 'ollama') ? 'basis' : 'ollama';
+    echo json_encode(['status' => 'success', 'engine' => $_SESSION['ai_engine']]);
     exit;
 }
 
-if (!isset($_SESSION['ai_talking_char_id']) || $_SESSION['ai_talking_char_id'] != $id) {
-    $_SESSION['ai_talking_char_id'] = $id;
-    $_SESSION['chat_history'] = [
-        ["sender" => "char", "text" => "Oh, hey Doctor! I'm " . $safe_char_name . ". Glad you dropped by. What's on your mind today?"]
-    ];
-}
+/**
+ * Upgraded Basis AI response generator using operator stats, skills, lore,
+ * class role notes, and optional prompt mode ('chat', 'auto', 'combat', 'lore', 'voice').
+ */
+function getBasisReply(array $op, string $userMsg, string $mode = 'chat'): string {
+    $name   = trim((string)($op['name'] ?? 'Operator'));
+    $class  = trim((string)($op['class'] ?? 'Operator'));
+    $rarity = max(1, min(6, (int)($op['rarity'] ?? 1)));
+    $lore   = trim((string)($op['lore'] ?? ''));
 
-if (!isset($_SESSION['ai_mode'])) {
-    $_SESSION['ai_mode'] = 'ollama';
-}
+    $hp     = (int)($op['hp'] ?? 0);
+    $atk    = (int)($op['atk'] ?? 0);
+    $def    = (int)($op['def'] ?? 0);
+    $block  = (int)($op['block_count'] ?? 1);
+    $cost   = (int)($op['deploy_cost'] ?? 0);
 
-if (isset($_GET['toggle_mode'])) {
-    $_SESSION['ai_mode'] = ($_SESSION['ai_mode'] === 'ollama') ? 'basis' : 'ollama';
-    $mode_name = ($_SESSION['ai_mode'] === 'ollama') ? 'Ollama AI Mode' : 'Basis AI (Natural Human) Mode';
-    $_SESSION['chat_history'] = [
-        ["sender" => "char", "text" => "System notice: Switched engine to " . $mode_name . ". Let's continue, Doctor."]
-    ];
-    header("Location: ai_talking.php?id=" . $id);
-    exit;
-}
+    $hpE2   = (int)($op['hp_e2'] ?? 0);
+    $atkE2  = (int)($op['atk_e2'] ?? 0);
+    $defE2  = (int)($op['def_e2'] ?? 0);
 
-$is_ollama = ($_SESSION['ai_mode'] === 'ollama');
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    header('Content-Type: application/json');
-    $action = $_POST['action'];
-    $user_msg = trim($_POST['user_message'] ?? '');
-
-    $char_name   = $safe_char_name;
-    $char_class  = $op['class'];
-    $char_rarity = $op['rarity'];
-    $char_hp     = $op['hp'];
-    $char_atk    = $op['atk'];
-    $char_def    = $op['def'];
-    $char_lore   = $op['lore'] ?: 'An elite operator of Rhodes Island.';
-
-    if ($action === 'reply' && !empty($user_msg)) {
-        $_SESSION['chat_history'][] = ["sender" => "user", "text" => $user_msg];
+    $skills = [];
+    for ($i = 1; $i <= 3; $i++) {
+        $sName = trim((string)($op["s{$i}_name"] ?? ''));
+        $sDesc = trim((string)($op["s{$i}_desc"] ?? ''));
+        if ($sName !== '') {
+            $skills[] = [
+                'slot' => "Skill 0{$i}",
+                'name' => $sName,
+                'desc' => $sDesc,
+            ];
+        }
     }
 
-    $ai_reply = "";
+    $q = mb_strtolower(trim($userMsg));
 
-    if ($is_ollama) {
-        $system_instructions = "You are roleplaying as {$char_name}, an operator from Arknights.
-Profile: Name {$char_name}, Class {$char_class}, Rarity {$char_rarity} Stars. Combat Stats: HP {$char_hp}, ATK {$char_atk}, DEF {$char_def}.
-Background Lore / Disposition: \"{$char_lore}\"
-Instructions: Reply to the Doctor in a casual, engaging, human-like tone as {$char_name}. Keep replies concise and in character. Never repeat the user's message back.";
-
-        $history_text = "";
-        foreach (array_slice($_SESSION['chat_history'], -8) as $msg) {
-            $history_text .= ($msg['sender'] === 'user' ? "Doctor: " : "{$char_name}: ") . $msg['text'] . "\n";
+    // Extract clean opening/snippet from archive lore if available
+    $loreSnippet = '';
+    if ($lore !== '') {
+        $cleanLore = preg_replace('/\s+/', ' ', $lore);
+        $sentences = preg_split('/(?<=[.!?。！？])\s+/u', $cleanLore, -1, PREG_SPLIT_NO_EMPTY);
+        $loreSnippet = $sentences[0] ?? mb_substr($cleanLore, 0, 170);
+        if (mb_strlen($loreSnippet) > 185) {
+            $loreSnippet = mb_substr($loreSnippet, 0, 182) . '...';
         }
+    }
 
-        $prompt = ($action === 'auto')
-            ? "{$system_instructions}\n\nContinue speaking naturally as {$char_name}.\n{$char_name}:"
-            : "{$system_instructions}\n\nConversation History:\n{$history_text}\n{$char_name}:";
+    $classStyle = [
+        'Vanguard'   => ['tone' => 'alert and forward-ready', 'roleNote' => 'securing early deployment points and generating DP before the main wave arrives'],
+        'Guard'      => ['tone' => 'steady and frontline-focused', 'roleNote' => 'holding pressure lanes and punishing enemies that step into range'],
+        'Sniper'     => ['tone' => 'calm and precise', 'roleNote' => 'picking off high-priority targets and aerial threats from safe elevation'],
+        'Defender'   => ['tone' => 'resolute and protective', 'roleNote' => 'anchoring the line and absorbing heavy hits so the squad stays standing'],
+        'Medic'      => ['tone' => 'attentive and composed', 'roleNote' => 'monitoring vitals, stabilizing injuries, and keeping frontline operators active'],
+        'Caster'     => ['tone' => 'measured and analytical', 'roleNote' => 'breaking through high-armor targets with Arts damage'],
+        'Supporter'  => ['tone' => 'observant and tactical', 'roleNote' => 'controlling enemy tempo, slowing advances, and shifting battlefield advantage'],
+        'Specialist' => ['tone' => 'adaptable and sharp', 'roleNote' => 'handling unconventional objectives, redeployment timing, and positional shifts'],
+    ];
+    $style = $classStyle[$class] ?? [
+        'tone' => 'focused and ready',
+        'roleNote' => 'carrying out orders on the field',
+    ];
 
-        $api_url = "http://localhost:11434/api/generate";
+    $isGreeting = ($mode === 'auto')
+        || (bool)preg_match('/\b(hi|hello|hey|greetings|good morning|good afternoon|good evening|yo|sup|greet|auto)\b/i', $q)
+        || mb_strpos($q, '你好') !== false;
+    $isCombat   = ($mode === 'combat')
+        || (bool)preg_match('/\b(skill|attack|atk|def|hp|cost|dp|block|deploy|fight|battle|combat|tactic|strategy|tip|e2|elite)\b/i', $q);
+    $isLore     = ($mode === 'lore')
+        || (bool)preg_match('/\b(lore|story|past|history|background|who are you|rhodes|origin|about you|archive)\b/i', $q);
+    $isVoice    = ($mode === 'voice')
+        || (bool)preg_match('/\b(voice|line|quote|say something|greeting line)\b/i', $q);
+
+    // 1. Voice line / quote
+    if ($isVoice) {
+        if (!empty($skills)) {
+            $pick = $skills[array_rand($skills)];
+            return "{$name} ({$rarity}★ {$class}, {$style['tone']}): \"Orders received, Doctor. {$pick['name']} is primed—stay sharp out there.\"";
+        }
+        return "{$name} ({$rarity}★ {$class}, {$style['tone']}): \"{$name} reporting in. Every step on this land counts, Doctor—let's make sure we return safely.\"";
+    }
+
+    // 2. Combat / stats / skills
+    if ($isCombat) {
+        $statSummary = "Base stats: HP {$hp}, ATK {$atk}, DEF {$def}, Block {$block}, DP Cost {$cost}.";
+        if ($hpE2 > 0 || $atkE2 > 0 || $defE2 > 0) {
+            $statSummary .= " At Elite 2, my output reaches HP {$hpE2}, ATK {$atkE2}, DEF {$defE2}.";
+        }
+        $skillLine = '';
+        if (!empty($skills)) {
+            $namesList = implode(', ', array_map(fn($s) => "{$s['slot']}: {$s['name']}", $skills));
+            $firstDesc = $skills[0]['desc'] !== ''
+                ? ' — ' . mb_substr(preg_replace('/\s+/', ' ', $skills[0]['desc']), 0, 120)
+                : '';
+            $skillLine = " Available skills: {$namesList}.{$firstDesc}";
+        }
+        return "As a {$rarity}★ {$class}, I focus on {$style['roleNote']}. {$statSummary}{$skillLine}";
+    }
+
+    // 3. Lore / archive background
+    if ($isLore) {
+        if ($loreSnippet !== '') {
+            return "Archive note from {$name}: {$loreSnippet} Even when things get complicated, I keep my footing as a {$class} under Rhodes Island.";
+        }
+        return "My personnel file at Rhodes Island is brief, Doctor, though my role as a {$rarity}★ {$class} is clear: {$style['roleNote']}. Ask me about my combat stats or skills anytime.";
+    }
+
+    // 4. Greeting / Auto check-in
+    if ($isGreeting) {
+        $opening = $loreSnippet !== '' ? " {$loreSnippet}" : '';
+        return "Good to see you, Doctor. I'm {$name}, a {$rarity}★ {$class}—{$style['tone']} and ready for duty.{$opening} What are we looking into today?";
+    }
+
+    // 5. Contextual general reply
+    $trimmedPrompt = mb_substr(preg_replace('/\s+/', ' ', $userMsg), 0, 120);
+    $contextNote = $loreSnippet !== ''
+        ? " Keeping my background in mind—{$loreSnippet}"
+        : " From my perspective as a {$class},";
+    return "You brought up \"{$trimmedPrompt}\", Doctor.{$contextNote} I'm staying {$style['tone']} and focused on {$style['roleNote']}. How would you like to proceed?";
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['chat_message'])) {
+    header('Content-Type: application/json; charset=UTF-8');
+    ini_set('display_errors', '0');
+
+    $userMsg = trim((string)$_POST['chat_message']);
+    $mode = trim((string)($_POST['mode'] ?? 'chat'));
+    if (!in_array($mode, ['chat', 'auto', 'combat', 'lore', 'voice'], true)) {
+        $mode = 'chat';
+    }
+
+    if ($userMsg === '') {
+        echo json_encode(['status' => 'error', 'message' => 'Message cannot be empty.']);
+        exit;
+    }
+
+    $engine = $_SESSION['ai_engine'] ?? 'ollama';
+    $reply = '';
+    $usedSource = 'basis';
+
+    if ($engine === 'ollama') {
+        $name = $op['name'] ?? 'Operator';
+        $class = $op['class'] ?? 'Operator';
+        $rarity = $op['rarity'] ?? '';
+        $lore = mb_substr((string)($op['lore'] ?? ''), 0, 600);
+        $skillsSummary = implode(', ', array_filter([
+            $op['s1_name'] ?? '',
+            $op['s2_name'] ?? '',
+            $op['s3_name'] ?? ''
+        ]));
+
+        $prompt = "You are {$name}, a {$rarity}-star {$class} operator from Arknights at Rhodes Island. "
+                . "Reply in character to the Doctor concisely (2-4 sentences).\n"
+                . ($skillsSummary !== '' ? "Skills: {$skillsSummary}.\n" : '')
+                . ($lore !== '' ? "Background: {$lore}\n" : '')
+                . "Doctor says: {$userMsg}\n{$name}:";
+
         $payload = json_encode([
-            "model" => "llama3",
-            "prompt" => $prompt,
-            "stream" => false
+            'model'  => 'llama3',
+            'prompt' => $prompt,
+            'stream' => false
         ]);
 
-        $ch = curl_init($api_url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        $ollamaText = '';
+        if (function_exists('curl_init')) {
+            $ch = curl_init('http://localhost:11434/api/generate');
+            curl_setopt_array($ch, [
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $payload,
+                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => 12,
+                CURLOPT_CONNECTTIMEOUT => 4
+            ]);
+            $rawResp = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
 
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($response && $http_code === 200) {
-            $result = json_decode($response, true);
-            if (!empty(trim($result['response'] ?? ''))) {
-                $ai_reply = trim($result['response']);
+            if ($rawResp !== false && $httpCode >= 200 && $httpCode < 300) {
+                $decoded = json_decode($rawResp, true);
+                if (is_array($decoded) && !empty($decoded['response'])) {
+                    $ollamaText = trim((string)$decoded['response']);
+                }
+            }
+        } else {
+            $ctx = stream_context_create([
+                'http' => [
+                    'method'  => 'POST',
+                    'header'  => "Content-Type: application/json\r\n",
+                    'content' => $payload,
+                    'timeout' => 12
+                ]
+            ]);
+            $rawResp = @file_get_contents('http://localhost:11434/api/generate', false, $ctx);
+            if ($rawResp !== false) {
+                $decoded = json_decode($rawResp, true);
+                if (is_array($decoded) && !empty($decoded['response'])) {
+                    $ollamaText = trim((string)$decoded['response']);
+                }
             }
         }
 
-        if (empty($ai_reply)) {
-            $ai_reply = "[Ollama Offline]: Cannot reach Ollama at localhost:11434. Switch to Basis AI Mode or start Ollama.";
+        if ($ollamaText !== '') {
+            $reply = $ollamaText;
+            $usedSource = 'ollama';
+        } else {
+            $reply = getBasisReply($op, $userMsg, $mode);
+            $usedSource = 'basis';
         }
     } else {
-        $lower_msg = strtolower($user_msg);
-        if ($action === 'auto') {
-            $auto_pool = [
-                "I'm keeping a close eye on our tactical layout today. Let me know if you need anything, Doctor.",
-                "Just finishing up my equipment checks. What's next on our agenda?",
-                "The landship is running smoothly, but I'm always ready for your command."
-            ];
-            $ai_reply = $auto_pool[array_rand($auto_pool)];
-        } elseif (str_contains($lower_msg, 'ability') || str_contains($lower_msg, 'skill') || str_contains($lower_msg, 'power') || str_contains($lower_msg, 'strong')) {
-            $ability_pool = [
-                "My combat stats speak for themselves — with my training and gear, I can handle almost any hostile threat on the front lines!",
-                "You want to test my strength, Doctor? Just point me at the target, and I'll show you what a {$char_class} can do.",
-                "My abilities are honed daily through rigorous drills on the landship. I won't let you down!"
-            ];
-            $ai_reply = $ability_pool[array_rand($ability_pool)];
-        } elseif (str_contains($lower_msg, 'name') || str_contains($lower_msg, 'who are you') || str_contains($lower_msg, 'introduce')) {
-            $ai_reply = "I'm {$char_name}, a {$char_rarity}-star {$char_class} operator here at Rhodes Island. I'm always at your service, Doctor.";
-        } elseif (str_contains($lower_msg, 'stat') || str_contains($lower_msg, 'hp') || str_contains($lower_msg, 'atk') || str_contains($lower_msg, 'fight')) {
-            $ai_reply = "If you're checking my numbers, my current combat parameters are locked in and fully optimized for deployment!";
-        } elseif (str_contains($lower_msg, 'lore') || str_contains($lower_msg, 'story') || str_contains($lower_msg, 'background')) {
-            $ai_reply = "My past is tied to Rhodes Island's mission... {$char_lore}";
-        } elseif (str_contains($lower_msg, 'hi') || str_contains($lower_msg, 'hello') || str_contains($lower_msg, 'hey') || str_contains($lower_msg, 'morning')) {
-            $hi_pool = [
-                "Hey there, Doctor! Glad you took a break from all that paperwork.",
-                "Hello! It's always great to catch you when you're taking a breather.",
-                "Hi, Doctor! What's on your mind today? I'm all ears."
-            ];
-            $ai_reply = $hi_pool[array_rand($hi_pool)];
-        } else {
-            $natural_pool = [
-                "That's really interesting! Tell me more about what you're thinking, Doctor.",
-                "I see... We should definitely look into that during our next break on the landship.",
-                "Haha, you always come up with unique topics, Doctor! I like that about you.",
-                "Got it! I'll keep that in mind as we plan our upcoming missions together.",
-                "Hmm, that's a good point. Let's make sure we handle it properly."
-            ];
-            $ai_reply = $natural_pool[array_rand($natural_pool)];
-        }
+        $reply = getBasisReply($op, $userMsg, $mode);
+        $usedSource = 'basis';
     }
 
-    if (!empty($ai_reply) && !str_starts_with($ai_reply, '[')) {
-        $ai_reply = preg_replace('/^(' . preg_quote($char_name, '/') . ':?\s*)/i', '', $ai_reply);
-    }
-
-    $_SESSION['chat_history'][] = ["sender" => "char", "text" => $ai_reply];
-    echo json_encode(['reply' => $ai_reply, 'history' => $_SESSION['chat_history']]);
+    echo json_encode([
+        'status'        => 'success',
+        'reply'         => $reply,
+        'engine'        => $engine,
+        'active_source' => $usedSource
+    ]);
     exit;
 }
 
-$custom_wallpaper = !empty($op['wallpaper']) ? htmlspecialchars($op['wallpaper'], ENT_QUOTES, 'UTF-8') : '';
-$stand_video_url  = trim($op['stage_video'] ?? '');
-$deploy_video_url = trim($op['deploy_video'] ?? '');
-$attack_video_url = trim($op['attack_video'] ?? '');
+$activeEngine = $_SESSION['ai_engine'] ?? 'ollama';
+$opName = $op['name'] ?? 'Operator';
+$opClass = $op['class'] ?? 'Operator';
+$opRarity = max(1, min(6, (int)($op['rarity'] ?? 1)));
+$portraitImg = !empty($op['image_path_e2']) ? $op['image_path_e2'] : ($op['image_path'] ?? '');
+$wallpaperUrl = trim((string)($op['wallpaper'] ?? ''));
+if ($wallpaperUrl === '') {
+    $wallpaperUrl = 'https://arknights.wiki.gg/images/71_i03.png';
+}
 
-$has_stand_video  = (bool)preg_match('/\.(mp4|webm)(\?.*)?$/i', $stand_video_url);
-$has_deploy_video = (bool)preg_match('/\.(mp4|webm)(\?.*)?$/i', $deploy_video_url);
-$has_attack_video = (bool)preg_match('/\.(mp4|webm)(\?.*)?$/i', $attack_video_url);
-$has_any_video    = $has_stand_video || $has_deploy_video || $has_attack_video;
-
-$fallback_img = !empty($op['image_path_e2']) ? $op['image_path_e2'] : $op['image_path'];
-
-$sounds_stmt = $pdo->prepare("SELECT file_path, sound_name FROM operator_sounds WHERE operator_id = ?");
-$sounds_stmt->execute([$id]);
-$operator_sounds = $sounds_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$rarity_stars = str_repeat('★', max(1, min(6, intval($op['rarity'] ?? 6))));
-$accent_color = $is_ollama ? '#00B4D8' : '#E59811';
+$deployVideo = trim((string)($op['deploy_video'] ?? ''));
+$stageVideo  = trim((string)($op['stage_video'] ?? ''));
+$attackVideo = trim((string)($op['attack_video'] ?? ''));
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Talking Mode - <?php echo htmlspecialchars($safe_char_name, ENT_QUOTES, 'UTF-8'); ?></title>
+    <title>AI Talking — <?= htmlspecialchars($opName) ?></title>
     <link rel="stylesheet" href="style.css">
     <style>
         * { box-sizing: border-box; }
-        body { 
-            overflow-x: hidden;
-            background-color: #070B10;
-            color: #E2E8F0;
-            <?php if (!empty($custom_wallpaper)): ?>
-            background-image: linear-gradient(135deg, rgba(7, 11, 16, 0.72), rgba(11, 19, 29, 0.85)), url('<?php echo $custom_wallpaper; ?>');
-            background-size: cover; 
-            background-position: center center; 
-            background-attachment: fixed;
-            background-repeat: no-repeat;
-            <?php endif; ?>
-            margin: 0; padding: 0;
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        body.ai-talking-page {
+            margin: 0;
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
+            background-color: #070B10 !important;
+            background-image: linear-gradient(135deg, rgba(7, 11, 16, 0.78), rgba(11, 19, 29, 0.9)), url('<?= htmlspecialchars($wallpaperUrl, ENT_QUOTES, 'UTF-8') ?>') !important;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-attachment: fixed !important;
+            color: #E2E8F0;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            text-align: left;
         }
 
-        .main-header {
+        .ai-shell {
+            width: 92%;
+            max-width: 1260px;
+            margin: 24px auto 48px;
+            display: grid;
+            grid-template-columns: minmax(310px, 430px) minmax(0, 1fr);
+            gap: 24px;
+            align-items: start;
+        }
+
+        .stage-panel, .chat-panel {
+            background: rgba(11, 19, 29, 0.9);
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 16px 38px rgba(0, 0, 0, 0.72);
+        }
+
+        .stage-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 14px 30px;
-            background: rgba(11, 19, 29, 0.88);
-            backdrop-filter: blur(12px);
-            border-bottom: 2px solid <?php echo $accent_color; ?>;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
-        }
-        .logo {
-            display: flex;
-            align-items: center;
             gap: 10px;
+            margin-bottom: 12px;
+        }
+        .stage-header h2 {
+            margin: 0;
+            font-size: 16px;
             font-weight: 800;
-            color: #F8FAFC;
-            font-size: 15px;
-            letter-spacing: 1px;
-        }
-        .logo-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: <?php echo $accent_color; ?>;
-            box-shadow: 0 0 10px <?php echo $accent_color; ?>;
-        }
-        .logo span { color: #E59811; }
-        .header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .btn-action {
-            padding: 8px 14px;
-            border-radius: 5px;
-            font-weight: 700;
-            text-decoration: none;
-            font-size: 11px;
-            letter-spacing: 0.6px;
-            transition: all 0.2s ease;
-            border: 1px solid transparent;
-        }
-        .btn-action:hover { transform: translateY(-1px); filter: brightness(1.12); }
-
-        .comms-wrapper {
-            width: 92%;
-            max-width: 1240px;
-            margin: 24px auto;
-            display: grid;
-            grid-template-columns: 340px minmax(0, 1fr);
-            gap: 20px;
-            flex: 1;
-            align-items: stretch;
-        }
-
-        .operator-panel {
-            background: rgba(13, 22, 34, 0.86);
-            backdrop-filter: blur(14px);
-            border: 1px solid rgba(0, 180, 216, 0.45);
-            border-top: 3px solid #00B4D8;
-            border-radius: 12px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.75);
-        }
-        .ai-stage {
-            position: relative;
-            flex: 1;
-            min-height: 290px;
-            background: 
-                radial-gradient(circle at 50% 45%, rgba(0, 180, 216, 0.14) 0%, rgba(7, 11, 16, 0.95) 75%),
-                linear-gradient(rgba(0, 180, 216, 0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 180, 216, 0.05) 1px, transparent 1px);
-            background-size: 100% 100%, 24px 24px, 24px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 16px;
-            overflow: hidden;
-            cursor: pointer;
-            user-select: none;
-        }
-        .ai-stage::before, .ai-stage::after {
-            content: '';
-            position: absolute;
-            width: 18px;
-            height: 18px;
-            border-color: #E59811;
-            border-style: solid;
-            pointer-events: none;
-            z-index: 3;
-        }
-        .ai-stage::before { top: 10px; right: 10px; border-width: 2px 2px 0 0; }
-        .ai-stage::after { bottom: 10px; left: 10px; border-width: 0 0 2px 2px; }
-
-        .ai-stage video {
-            width: 100%;
-            height: 100%;
-            max-height: 310px;
-            object-fit: contain;
-            border-radius: 6px;
-            filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.85));
-        }
-        .ai-stage img.char-img {
-            max-height: 300px;
-            max-width: 100%;
-            object-fit: contain;
-            filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.9));
-            transition: transform 0.18s ease;
-        }
-        .ai-stage.attacking img.char-img {
-            transform: scale(1.08);
+            color: #FFFFFF;
         }
         .stage-badge {
-            position: absolute;
-            top: 12px;
-            left: 12px;
-            background: rgba(7, 11, 16, 0.88);
-            border: 1px solid rgba(229, 152, 17, 0.7);
-            color: #E59811;
+            background: rgba(0, 188, 212, 0.15);
+            border: 1px solid #00bcd4;
+            color: #38BDF8;
             font-size: 10px;
-            font-weight: 700;
+            font-weight: 800;
             padding: 4px 9px;
-            border-radius: 4px;
-            letter-spacing: 0.8px;
-            z-index: 3;
-        }
-        .stage-hint {
-            position: absolute;
-            bottom: 10px;
-            right: 12px;
-            background: rgba(7, 11, 16, 0.78);
-            border: 1px solid rgba(0, 180, 216, 0.4);
-            color: #94A3B8;
-            font-size: 10px;
-            font-weight: 600;
-            padding: 3px 8px;
-            border-radius: 4px;
-            z-index: 3;
-        }
-
-        .operator-meta {
-            padding: 16px 18px;
-            background: rgba(7, 11, 16, 0.92);
-            border-top: 1px solid #1E293B;
-        }
-        .op-rarity { color: #FBBF24; font-size: 13px; letter-spacing: 2px; margin-bottom: 2px; }
-        .op-title-row { display: flex; justify-content: space-between; align-items: center; }
-        .op-name { font-size: 19px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.5px; }
-        .op-class-tag {
-            background: rgba(0, 180, 216, 0.15);
-            border: 1px solid #00B4D8;
-            color: #00B4D8;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 3px 8px;
             border-radius: 4px;
             text-transform: uppercase;
         }
-        .op-mini-stats {
+
+        .stage-viewport {
+            position: relative;
+            height: 360px;
+            border-radius: 10px;
+            overflow: hidden;
+            background: radial-gradient(circle at 50% 35%, rgba(0, 188, 212, 0.16), #070B10 80%);
+            border: 1px solid #1E2E42;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .stage-viewport img,
+        .stage-viewport video {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            transition: transform 0.25s ease, filter 0.25s ease;
+        }
+        .stage-viewport.anim-deploy img {
+            animation: deployDrop 0.65s ease;
+        }
+        .stage-viewport.anim-attack img {
+            animation: attackLunge 0.45s ease;
+        }
+
+        @keyframes deployDrop {
+            0% { transform: translateY(-28px) scale(0.92); opacity: 0.4; }
+            100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        @keyframes attackLunge {
+            0% { transform: translateX(0) scale(1); }
+            45% { transform: translateX(18px) scale(1.06); filter: drop-shadow(0 0 14px rgba(255, 180, 0, 0.7)); }
+            100% { transform: translateX(0) scale(1); }
+        }
+
+        .stage-controls {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 8px;
             margin-top: 12px;
-            padding-top: 10px;
-            border-top: 1px solid #1E293B;
-            text-align: center;
         }
-        .mini-stat span { display: block; font-size: 10px; color: #64748B; font-weight: 700; }
-        .mini-stat strong { font-size: 13px; color: #E2E8F0; }
-
-        .terminal-panel {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            min-width: 0;
-        }
-        .chat-container {
-            flex: 1;
-            min-height: 360px;
-            max-height: 460px;
-            background: rgba(13, 22, 34, 0.88);
-            backdrop-filter: blur(14px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-top: 3px solid <?php echo $accent_color; ?>;
-            border-radius: 12px;
-            padding: 22px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.75);
-        }
-        .chat-container::-webkit-scrollbar { width: 6px; }
-        .chat-container::-webkit-scrollbar-track { background: rgba(7, 11, 16, 0.5); border-radius: 4px; }
-        .chat-container::-webkit-scrollbar-thumb { background: #2A3B52; border-radius: 4px; }
-        .chat-container::-webkit-scrollbar-thumb:hover { background: #00B4D8; }
-
-        .chat-bubble {
-            padding: 14px 18px;
-            border-radius: 10px;
-            max-width: 78%;
-            width: fit-content;
-            font-size: 14px;
-            line-height: 1.65;
-            text-align: left;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-            word-break: break-word;
-            overflow-wrap: break-word;
-            white-space: pre-wrap;
-        }
-        .chat-bubble.char {
-            background: linear-gradient(135deg, rgba(229, 152, 17, 0.16), rgba(30, 41, 59, 0.75));
-            border: 1px solid rgba(229, 152, 17, 0.35);
-            border-left: 4px solid #E59811;
-            align-self: flex-start;
-            color: #F1F5F9;
-        }
-        .chat-bubble.user {
-            background: linear-gradient(135deg, rgba(0, 180, 216, 0.2), rgba(15, 23, 42, 0.85));
-            border: 1px solid rgba(0, 180, 216, 0.35);
-            border-right: 4px solid #00B4D8;
-            align-self: flex-end;
-            color: #FFFFFF;
-        }
-        .bubble-name {
+        .stage-btn {
+            padding: 9px 10px;
+            border-radius: 6px;
+            border: 1px solid #2A3B52;
+            background: #132030;
+            color: #E2E8F0;
             font-size: 11px;
             font-weight: 800;
-            margin-bottom: 5px;
+            cursor: pointer;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
         }
-        .chat-bubble.char .bubble-name { color: #E59811; }
-        .chat-bubble.user .bubble-name { color: #38BDF8; text-align: right; }
+        .stage-btn:hover { border-color: #00bcd4; color: #fff; }
 
-        .chat-controls {
-            background: rgba(13, 22, 34, 0.9);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
-            padding: 14px;
+        .voice-box {
+            margin-top: 14px;
+            padding: 12px 14px;
+            background: rgba(7, 11, 16, 0.78);
+            border: 1px solid #1E2E42;
+            border-radius: 8px;
+        }
+        .btn-voice {
+            width: 100%;
+            padding: 10px;
+            background: #ffb400;
+            color: #070B10;
+            border: none;
+            border-radius: 6px;
+            font-weight: 800;
+            font-size: 12px;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+        .btn-voice:hover { background: #ffc93c; }
+        .voice-subtitle {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #F8FAFC;
+            min-height: 18px;
+            line-height: 1.5;
+        }
+
+        .chat-top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #1E2E42;
+        }
+        .engine-status-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .source-pill {
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid #10B981;
+            color: #6EE7B7;
+        }
+        .source-pill.basis {
+            background: rgba(255, 180, 0, 0.15);
+            border-color: #ffb400;
+            color: #ffb400;
+        }
+        .btn-engine {
+            padding: 6px 12px;
+            border-radius: 5px;
+            border: 1px solid #00bcd4;
+            background: rgba(0, 188, 212, 0.14);
+            color: #38BDF8;
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+        .btn-engine:hover { background: #00bcd4; color: #070B10; }
+
+        .prompt-chips {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 12px 0;
+        }
+        .prompt-chip {
+            padding: 6px 11px;
+            border-radius: 999px;
+            border: 1px solid #2A3B52;
+            background: rgba(7, 11, 16, 0.85);
+            color: #CBD5E1;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .prompt-chip:hover {
+            border-color: #ffb400;
+            color: #ffb400;
+        }
+
+        .chat-log {
+            height: 330px;
+            overflow-y: auto;
+            padding: 12px;
+            background: rgba(7, 11, 16, 0.82);
+            border: 1px solid #1E2E42;
+            border-radius: 8px;
+            margin-bottom: 12px;
             display: flex;
             flex-direction: column;
             gap: 10px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.65);
         }
-        .btn-auto {
-            background: linear-gradient(90deg, #0284C7, #00B4D8);
-            color: #070B10;
-            padding: 10px;
+        .msg-bubble {
+            max-width: 84%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.55;
+        }
+        .msg-user {
+            align-self: flex-end;
+            background: rgba(0, 188, 212, 0.2);
+            border: 1px solid rgba(0, 188, 212, 0.5);
+            color: #FFFFFF;
+        }
+        .msg-op {
+            align-self: flex-start;
+            background: #132030;
+            border: 1px solid #2A3B52;
+            color: #E2E8F0;
+        }
+        .msg-meta {
+            font-size: 10px;
             font-weight: 800;
-            font-size: 12px;
-            letter-spacing: 0.8px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: 0.2s;
+            color: #ffb400;
+            margin-bottom: 3px;
+            text-transform: uppercase;
         }
-        .btn-auto:hover { filter: brightness(1.1); transform: translateY(-1px); }
-        .chat-input-row { display: flex; gap: 10px; }
+
+        .chat-input-row {
+            display: flex;
+            gap: 8px;
+        }
         .chat-input-row input {
             flex: 1;
-            padding: 13px 16px;
+            margin: 0;
+            padding: 11px 14px;
             background: #070B10;
             border: 1px solid #2A3B52;
-            color: #fff;
-            font-size: 14px;
+            color: #FFFFFF;
             border-radius: 6px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        .chat-input-row input:focus { border-color: #00B4D8; }
-        .chat-input-row button {
-            padding: 0 28px;
-            background: #E59811;
-            color: #070B10;
-            font-weight: 800;
             font-size: 13px;
-            letter-spacing: 0.8px;
+            outline: none;
+        }
+        .chat-input-row input:focus { border-color: #00bcd4; }
+        .btn-send {
+            padding: 11px 18px;
+            background: #00bcd4;
+            color: #070B10;
             border: none;
             border-radius: 6px;
+            font-weight: 800;
+            font-size: 12px;
             cursor: pointer;
-            transition: 0.2s;
+            text-transform: uppercase;
         }
-        .chat-input-row button:hover { background: #FBBF24; }
+        .btn-auto {
+            padding: 11px 14px;
+            background: #ffb400;
+            color: #070B10;
+            border: none;
+            border-radius: 6px;
+            font-weight: 800;
+            font-size: 12px;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
 
-        @media (max-width: 860px) {
-            .comms-wrapper { grid-template-columns: 1fr; }
-            .ai-stage { min-height: 220px; }
-            .chat-container { max-height: 340px; }
+        @media (max-width: 920px) {
+            .ai-shell { grid-template-columns: 1fr; }
         }
     </style>
 </head>
-<body>
+<body class="ai-talking-page">
     <header class="main-header">
-        <div class="logo">
-            <div class="logo-dot"></div>
-            PRTS NEURAL LINK — <span><?php echo strtoupper(htmlspecialchars($safe_char_name)); ?></span>
-        </div>
-        <div class="header-actions">
-            <a href="ai_talking.php?id=<?php echo $id; ?>&toggle_mode=1" class="btn-action" style="background: <?php echo $accent_color; ?>; color: #070B10;">
-                ENGINE: <?php echo $is_ollama ? 'OLLAMA AI' : 'BASIS AI'; ?>
-            </a>
-            <a href="ai_talking.php?id=<?php echo $id; ?>&reset_chat=1" class="btn-action" style="background: rgba(239, 68, 68, 0.2); border-color: #EF4444; color: #FCA5A5;" onclick="return confirm('Clear chat logs?');">
-                RESET
-            </a>
-            <a href="admin_edit.php?id=<?php echo $id; ?>" class="btn-action" style="background: rgba(229, 152, 17, 0.2); border-color: #E59811; color: #FBBF24;">
-                EDIT SUBTITLES
-            </a>
-            <a href="details.php?id=<?php echo $id; ?>" class="btn-action" style="background: rgba(0, 180, 216, 0.18); border-color: #00B4D8; color: #38BDF8;">
-                DOSSIER
-            </a>
-            <a href="index.php" class="btn-action" style="background: #1E293B; color: #E2E8F0;">
-                INDEX
-            </a>
+        <div class="logo">NEURAL LINK — <?= strtoupper(htmlspecialchars($opName)) ?></div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span style="background: #132030; color: #38BDF8; border: 1px solid #2A3B52; padding: 6px 12px; border-radius: 4px; font-size: 11px; font-weight: 700;">
+                👤 <?= htmlspecialchars($username) ?>
+            </span>
+            <?php if ($role === 'admin'): ?>
+                <a href="admin_edit.php?id=<?= $id ?>" class="btn-add" style="background: #ffb400; color: #070B10;">⚙️ EDIT & VOICE</a>
+            <?php endif; ?>
+            <a href="details.php?id=<?= $id ?>" class="btn-add" style="background: #00bcd4; color: #070B10;">📄 DOSSIER</a>
+            <a href="index.php" class="btn-add">⬅ INDEX</a>
         </div>
     </header>
 
-    <div class="comms-wrapper">
-        <aside class="operator-panel">
-            <div class="ai-stage" id="ai-stage" onclick="triggerAttackAnimation()" title="Click to trigger Attack animation">
-                <span class="stage-badge" id="stage-badge">
-                    <?php echo $has_deploy_video ? '● DEPLOY' : ($has_stand_video ? '● STAND' : '● STATIC FEED'); ?>
-                </span>
-
-                <video id="stage-video" autoplay muted playsinline style="<?php echo $has_any_video ? '' : 'display:none;'; ?>"></video>
-                <img src="<?php echo htmlspecialchars($fallback_img, ENT_QUOTES, 'UTF-8'); ?>" alt="Portrait" class="char-img" id="stage-img" style="<?php echo $has_any_video ? 'display:none;' : ''; ?>">
-
-                <span class="stage-hint">CLICK FOR ATTACK</span>
+    <main class="ai-shell">
+        <section class="stage-panel">
+            <div class="stage-header">
+                <h2><?= htmlspecialchars($opName) ?> <span style="color:#ffb400; font-size:13px;"><?= str_repeat('★', $opRarity) ?></span></h2>
+                <span class="stage-badge" id="stage-state-badge"><?= strtoupper(htmlspecialchars($opClass)) ?> • STAND</span>
             </div>
 
-            <div class="operator-meta">
-                <div class="op-rarity"><?php echo $rarity_stars; ?></div>
-                <div class="op-title-row">
-                    <div class="op-name"><?php echo htmlspecialchars($safe_char_name); ?></div>
-                    <div class="op-class-tag"><?php echo htmlspecialchars($op['class']); ?></div>
-                </div>
-                <div class="op-mini-stats">
-                    <div class="mini-stat"><span>MAX HP</span><strong><?php echo intval($op['hp_e2'] ?: $op['hp']); ?></strong></div>
-                    <div class="mini-stat"><span>ATK</span><strong><?php echo intval($op['atk_e2'] ?: $op['atk']); ?></strong></div>
-                    <div class="mini-stat"><span>DEF</span><strong><?php echo intval($op['def_e2'] ?: $op['def']); ?></strong></div>
-                </div>
-            </div>
-        </aside>
-
-        <main class="terminal-panel">
-            <div class="chat-container" id="chat-box">
-                <?php foreach ($_SESSION['chat_history'] as $msg): ?>
-                    <div class="chat-bubble <?php echo $msg['sender']; ?>">
-                        <div class="bubble-name"><?php echo $msg['sender'] === 'char' ? htmlspecialchars($safe_char_name) : 'Doctor'; ?></div>
-                        <div><?php echo htmlspecialchars($msg['text']); ?></div>
-                    </div>
-                <?php endforeach; ?>
+            <div class="stage-viewport" id="stage-viewport" onclick="triggerStageAnim('attack')" title="Click to trigger Attack animation">
+                <video id="stage-video-player" style="display:none;" autoplay loop muted playsinline></video>
+                <img src="<?= htmlspecialchars($portraitImg, ENT_QUOTES, 'UTF-8') ?>" id="stage-portrait" alt="<?= htmlspecialchars($opName, ENT_QUOTES, 'UTF-8') ?>">
             </div>
 
-            <div class="chat-controls">
-                <div style="display: flex; gap: 10px;">
-                    <button class="btn-auto" style="flex: 1;" onclick="sendAction('auto')">⚡ AUTO-GENERATE CHARACTER DIALOGUE</button>
-                    <?php if (!empty($operator_sounds)): ?>
-                        <button class="btn-auto" style="flex: 1; background: linear-gradient(90deg, #10B981, #059669); color: #fff;" onclick="playRandomSound()">🔊 RANDOM VOICE LINE</button>
-                    <?php endif; ?>
+            <div class="stage-controls">
+                <button type="button" class="stage-btn" onclick="triggerStageAnim('deploy')">🚀 Deploy</button>
+                <button type="button" class="stage-btn" onclick="triggerStageAnim('stand')">🧍 Stand</button>
+                <button type="button" class="stage-btn" onclick="triggerStageAnim('attack')">⚔️ Attack</button>
+            </div>
+
+            <div class="voice-box">
+                <button type="button" class="btn-voice" onclick="playRandomVoice()">🔊 Random Voice Line (<?= count($operatorSounds) ?>)</button>
+                <div class="voice-subtitle" id="voice-subtitle">
+                    <?= count($operatorSounds) > 0 ? 'Click to play a recorded operator voice clip.' : 'No custom voice clips uploaded yet.' ?>
                 </div>
-                <div class="chat-input-row">
-                    <input type="text" id="user-input" placeholder="Transmit message to <?php echo htmlspecialchars($safe_char_name); ?>..." autofocus>
-                    <button onclick="sendAction('reply')">SEND</button>
+                <audio id="voice-audio" style="display:none;"></audio>
+            </div>
+        </section>
+
+        <section class="chat-panel">
+            <div class="chat-top-bar">
+                <div>
+                    <h2 style="margin:0; font-size:16px; font-weight:800; color:#FFFFFF;">💬 Operator Comms Terminal</h2>
+                </div>
+                <div class="engine-status-group">
+                    <span class="source-pill <?= $activeEngine === 'basis' ? 'basis' : '' ?>" id="source-indicator">
+                        Engine: <?= $activeEngine === 'ollama' ? 'Ollama (llama3)' : 'Basis AI' ?>
+                    </span>
+                    <button type="button" class="btn-engine" id="btn-toggle-engine" onclick="toggleEngine()">
+                        Switch to <?= $activeEngine === 'ollama' ? 'Basis AI' : 'Ollama AI' ?>
+                    </button>
                 </div>
             </div>
-        </main>
-    </div>
+
+            <div class="prompt-chips">
+                <button type="button" class="prompt-chip" onclick="sendQuickPrompt('Give me a quick combat tip for your class.', 'combat')">⚔️ Combat Tip</button>
+                <button type="button" class="prompt-chip" onclick="sendQuickPrompt('Tell me a bit about your background and lore.', 'lore')">📖 Background Lore</button>
+                <button type="button" class="prompt-chip" onclick="sendQuickPrompt('Share a battle voice line with me.', 'voice')">🎙️ Voice Line</button>
+                <button type="button" class="prompt-chip" onclick="sendQuickPrompt('How are you holding up at Rhodes Island today?', 'chat')">☕ Check-in</button>
+            </div>
+
+            <div class="chat-log" id="chat-log">
+                <div class="msg-bubble msg-op">
+                    <div class="msg-meta"><?= htmlspecialchars($opName) ?> • Basis AI</div>
+                    <div>Welcome back to the terminal, Doctor. <?= htmlspecialchars($opName) ?> is standing by.</div>
+                </div>
+            </div>
+
+            <form class="chat-input-row" id="chat-form" onsubmit="handleChatSubmit(event)">
+                <input type="text" id="chat-input" placeholder="Send a message to <?= htmlspecialchars($opName) ?>..." autocomplete="off">
+                <button type="submit" class="btn-send">Send</button>
+                <button type="button" class="btn-auto" onclick="sendAutoDialogue()">⚡ Auto</button>
+            </form>
+        </section>
+    </main>
 
     <script>
-        const stageEl = document.getElementById('ai-stage');
-        const stageVideo = document.getElementById('stage-video');
-        const stageImg = document.getElementById('stage-img');
-        const stageBadge = document.getElementById('stage-badge');
-
-        const stageAnimations = {
-            deploy: <?php echo json_encode($has_deploy_video ? $deploy_video_url : ''); ?>,
-            stand:  <?php echo json_encode($has_stand_video ? $stand_video_url : ''); ?>,
-            attack: <?php echo json_encode($has_attack_video ? $attack_video_url : ''); ?>
+        const stageVideos = {
+            deploy: <?= json_encode($deployVideo) ?>,
+            stand: <?= json_encode($stageVideo) ?>,
+            attack: <?= json_encode($attackVideo) ?>
         };
+        const operatorSounds = <?= json_encode($operatorSounds, JSON_UNESCAPED_UNICODE) ?>;
+        const opDisplayName = <?= json_encode($opName) ?>;
 
-        let currentAnimState = 'stand';
-        let attackFallbackTimer = null;
+        function triggerStageAnim(mode) {
+            const viewport = document.getElementById('stage-viewport');
+            const img = document.getElementById('stage-portrait');
+            const vid = document.getElementById('stage-video-player');
+            const badge = document.getElementById('stage-state-badge');
 
-        function setStageState(state) {
-            currentAnimState = state;
-            if (attackFallbackTimer) {
-                clearTimeout(attackFallbackTimer);
-                attackFallbackTimer = null;
+            if (badge) {
+                badge.textContent = <?= json_encode(strtoupper($opClass)) ?> + ' • ' + mode.toUpperCase();
             }
-            stageEl.classList.remove('attacking');
 
-            if (state === 'attack') {
-                stageBadge.innerText = '● ATTACK';
-                if (stageAnimations.attack) {
-                    stageImg.style.display = 'none';
-                    stageVideo.style.display = 'block';
-                    stageVideo.loop = false;
-                    stageVideo.src = stageAnimations.attack;
-                    stageVideo.currentTime = 0;
-                    stageVideo.play().catch(() => {});
-                    return;
+            const chosenVid = stageVideos[mode] || '';
+            if (chosenVid && vid && img) {
+                img.style.display = 'none';
+                vid.style.display = 'block';
+                if (vid.getAttribute('src') !== chosenVid) {
+                    vid.src = chosenVid;
                 }
-                stageEl.classList.add('attacking');
-                if (stageAnimations.stand) {
-                    stageImg.style.display = 'none';
-                    stageVideo.style.display = 'block';
-                    stageVideo.loop = true;
-                    if (!stageVideo.src.endsWith(stageAnimations.stand)) {
-                        stageVideo.src = stageAnimations.stand;
-                    }
-                    stageVideo.play().catch(() => {});
+                vid.loop = (mode === 'stand');
+                vid.play().catch(() => {});
+                if (mode !== 'stand') {
+                    vid.onended = () => triggerStageAnim('stand');
+                }
+                return;
+            }
+
+            if (vid) {
+                vid.pause();
+                vid.style.display = 'none';
+            }
+            if (img && viewport) {
+                img.style.display = 'block';
+                viewport.classList.remove('anim-deploy', 'anim-attack');
+                void viewport.offsetWidth;
+                if (mode === 'deploy') viewport.classList.add('anim-deploy');
+                if (mode === 'attack') viewport.classList.add('anim-attack');
+            }
+        }
+
+        function playRandomVoice() {
+            const sub = document.getElementById('voice-subtitle');
+            const audio = document.getElementById('voice-audio');
+            if (!operatorSounds || operatorSounds.length === 0) {
+                if (sub) sub.textContent = 'No voice lines configured for this operator.';
+                return;
+            }
+            const pick = operatorSounds[Math.floor(Math.random() * operatorSounds.length)];
+            const lineText = pick.sound_name || 'Voice clip playing...';
+            if (sub) sub.textContent = `“${lineText}”`;
+            if (audio && pick.file_path) {
+                audio.src = pick.file_path;
+                audio.play().catch(() => {});
+            }
+        }
+
+        function updateEngineBadge(engine, activeSource) {
+            const indicator = document.getElementById('source-indicator');
+            const toggleBtn = document.getElementById('btn-toggle-engine');
+            const effective = activeSource || engine;
+
+            if (indicator) {
+                if (effective === 'ollama') {
+                    indicator.textContent = 'Engine: Ollama (llama3)';
+                    indicator.classList.remove('basis');
                 } else {
-                    stageVideo.style.display = 'none';
-                    stageImg.style.display = 'block';
+                    indicator.textContent = engine === 'ollama' ? 'Engine: Basis AI (Ollama Fallback)' : 'Engine: Basis AI';
+                    indicator.classList.add('basis');
                 }
-                attackFallbackTimer = setTimeout(() => setStageState('stand'), 900);
-                return;
             }
-
-            if (state === 'deploy' && stageAnimations.deploy) {
-                stageBadge.innerText = '● DEPLOY';
-                stageImg.style.display = 'none';
-                stageVideo.style.display = 'block';
-                stageVideo.loop = false;
-                stageVideo.src = stageAnimations.deploy;
-                stageVideo.currentTime = 0;
-                stageVideo.play().catch(() => setStageState('stand'));
-                return;
-            }
-
-            stageBadge.innerText = stageAnimations.stand ? '● STAND' : '● STATIC FEED';
-            if (stageAnimations.stand) {
-                stageImg.style.display = 'none';
-                stageVideo.style.display = 'block';
-                stageVideo.loop = true;
-                if (!stageVideo.src.endsWith(stageAnimations.stand)) {
-                    stageVideo.src = stageAnimations.stand;
-                }
-                stageVideo.play().catch(() => {});
-            } else {
-                stageVideo.style.display = 'none';
-                stageImg.style.display = 'block';
+            if (toggleBtn) {
+                toggleBtn.textContent = engine === 'ollama' ? 'Switch to Basis AI' : 'Switch to Ollama AI';
             }
         }
 
-        stageVideo.addEventListener('ended', function() {
-            if (currentAnimState === 'deploy' || currentAnimState === 'attack') {
-                setStageState('stand');
-            }
-        });
-
-        function triggerAttackAnimation() {
-            setStageState('attack');
-        }
-
-        setStageState(stageAnimations.deploy ? 'deploy' : 'stand');
-
-        const chatBox = document.getElementById('chat-box');
-        chatBox.scrollTop = chatBox.scrollHeight;
-        const safeCharName = <?php echo json_encode($safe_char_name); ?>;
-        
-        const operatorSounds = <?php echo json_encode($operator_sounds); ?>;
-        let currentAudio = null;
-
-        function playRandomSound() {
-            if (!operatorSounds || operatorSounds.length === 0) return;
-            
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio.currentTime = 0;
-            }
-
-            const randomIndex = Math.floor(Math.random() * operatorSounds.length);
-            const selectedSound = operatorSounds[randomIndex];
-
-            currentAudio = new Audio(selectedSound.file_path);
-            currentAudio.play().catch(e => console.log("Audio play blocked or error:", e));
-
-            let rawSubtitle = selectedSound.sound_name || "Voice line played";
-            let subtitleText = rawSubtitle
-                .replace(/_/g, ' ')
-                .replace(/([a-z])([A-Z])/g, '$1 $2')
-                .replace(/([a-z,.!?])([A-Z])/g, '$1 $2')
-                .replace(/([,!?])([a-zA-Z])/g, '$1 $2')
-                .replace(/Youheard/gi, 'You heard ')
-                .replace(/Inesand/gi, 'Ines and ')
-                .replace(/Hoedererare/gi, 'Hoederer are ')
-                .replace(/actuallygonna/gi, 'actually gonna ')
-                .replace(/openashop/gi, 'open a shop ')
-                .replace(/inKazdel/gi, 'in Kazdel ')
-                .replace(/Iknowtheplaces/gi, 'I know the places ')
-                .replace(/theyvebeenlookingat/gi, "they've been looking at ")
-                .replace(/theyreallshitheaps/gi, "they're all shitheaps ")
-                .replace(/Butiguessmyli/gi, 'But I guess my li')
-                .replace(/lrevenanthere/gi, 'lrevenant here ')
-                .replace(/couldhelpmopthefloorswithhispartytricks/gi, 'could help mop the floors with his party tricks ')
-                .replace(/Hisopinion/gi, 'His opinion ')
-                .replace(/Lemmeask/gi, 'Lemme ask ')
-                .replace(/Ohheisfi/gi, 'Oh, he is fi')
-                .replace(/Nomatter/gi, 'No matter ')
-                .replace(/thisplace/gi, 'this place ')
-                .replace(/isnever/gi, 'is never ')
-                .replace(/nevergonna/gi, 'never gonna ')
-                .replace(/gonnaBe/gi, 'gonna be ')
-                .replace(/Youknow/gi, 'You know ')
-                .replace(/ihate/gi, 'I hate ')
-                .replace(/moronswho/gi, 'morons who ')
-                .replace(/can'tstop/gi, "can't stop ")
-                .replace(/naggingabout/gi, 'nagging about ')
-                .replace(/thegoodolddays/gi, 'the good old days ')
-                .replace(/Sowhydon'twetalkabout/gi, "So why don't we talk about ")
-                .replace(/whattoblowup/gi, 'what to blow up ')
-                .replace(/\s+/g, ' ')
-                .trim();
-
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble char';
-            
-            const nameDiv = document.createElement('div');
-            nameDiv.className = 'bubble-name';
-            nameDiv.innerText = safeCharName + ' (Voice Line)';
-            
-            const textDiv = document.createElement('div');
-            textDiv.innerText = ""; 
-            
-            bubble.appendChild(nameDiv);
-            bubble.appendChild(textDiv);
-            chatBox.appendChild(bubble);
-            chatBox.scrollTop = chatBox.scrollHeight;
-
-            let fullLine = `\"${subtitleText}\"`;
-            let charIndex = 0;
-            function typeWriter() {
-                if (charIndex < fullLine.length) {
-                    textDiv.innerText += fullLine.charAt(charIndex);
-                    charIndex++;
-                    chatBox.scrollTop = chatBox.scrollHeight;
-                    setTimeout(typeWriter, 25);
+        function toggleEngine() {
+            const fd = new URLSearchParams();
+            fd.append('toggle_engine', '1');
+            fetch(window.location.href, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: fd
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    updateEngineBadge(data.engine, data.engine);
                 }
-            }
-            typeWriter();
+            })
+            .catch(() => {});
         }
 
-        document.getElementById('user-input').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') sendAction('reply');
-        });
+        function appendBubble(senderLabel, text, isUser) {
+            const log = document.getElementById('chat-log');
+            if (!log) return;
+            const div = document.createElement('div');
+            div.className = 'msg-bubble ' + (isUser ? 'msg-user' : 'msg-op');
+            const meta = document.createElement('div');
+            meta.className = 'msg-meta';
+            meta.textContent = senderLabel;
+            const body = document.createElement('div');
+            body.textContent = text;
+            div.appendChild(meta);
+            div.appendChild(body);
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
 
-        function sendAction(actionType) {
-            const inputField = document.getElementById('user-input');
-            const message = inputField.value.trim();
-            if (actionType === 'reply' && !message) return;
-            if (actionType === 'reply') inputField.value = '';
+        function sendMessageText(text, mode = 'chat') {
+            const trimmed = String(text || '').trim();
+            if (!trimmed) return;
 
-            const formData = new URLSearchParams();
-            formData.append('action', actionType);
-            if (actionType === 'reply') formData.append('user_message', message);
+            appendBubble(<?= json_encode($username) ?>, trimmed, true);
+
+            const fd = new URLSearchParams();
+            fd.append('chat_message', trimmed);
+            fd.append('mode', mode);
 
             fetch(window.location.href, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData
+                body: fd
             })
-            .then(res => res.json())
+            .then(r => r.json())
             .then(data => {
-                chatBox.innerHTML = '';
-                data.history.forEach(msg => {
-                    const bubble = document.createElement('div');
-                    bubble.className = 'chat-bubble ' + msg.sender;
-                    const nameDiv = document.createElement('div');
-                    nameDiv.className = 'bubble-name';
-                    nameDiv.innerText = msg.sender === 'char' ? safeCharName : 'Doctor';
-                    const textDiv = document.createElement('div');
-                    textDiv.innerText = msg.text;
-                    bubble.appendChild(nameDiv);
-                    bubble.appendChild(textDiv);
-                    chatBox.appendChild(bubble);
-                });
-                chatBox.scrollTop = chatBox.scrollHeight;
+                if (data.status === 'success') {
+                    updateEngineBadge(data.engine, data.active_source);
+                    const sourceTag = data.active_source === 'ollama' ? 'Ollama AI' : 'Basis AI';
+                    appendBubble(`${opDisplayName} • ${sourceTag}`, data.reply, false);
+                } else {
+                    appendBubble('System', data.message || 'Unable to respond.', false);
+                }
             })
-            .catch(error => { console.error('Error:', error); });
+            .catch(() => {
+                appendBubble('System', 'Network error while contacting comms terminal.', false);
+            });
+        }
+
+        function handleChatSubmit(e) {
+            e.preventDefault();
+            const input = document.getElementById('chat-input');
+            if (!input) return;
+            const val = input.value;
+            input.value = '';
+            sendMessageText(val, 'chat');
+        }
+
+        function sendQuickPrompt(promptText, mode = 'chat') {
+            sendMessageText(promptText, mode);
+        }
+
+        function sendAutoDialogue() {
+            sendMessageText('Auto greeting: report readiness and current status to the Doctor.', 'auto');
         }
     </script>
 </body>

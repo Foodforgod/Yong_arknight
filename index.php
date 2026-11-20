@@ -2,27 +2,44 @@
 require_once 'db.php';
 session_start();
 
-$role =$_SESSION['role'] ?? 'guest';
-$username =$_SESSION['username'] ?? 'Guest';
+$role = $_SESSION['role'] ?? 'guest';
+$username = $_SESSION['username'] ?? 'Guest';
 
 $search = trim($_GET['search'] ?? '');
 $classFilter = trim($_GET['class_filter'] ?? '');
+$rarityFilter = isset($_GET['rarity_filter']) && $_GET['rarity_filter'] !== '' ? (int)$_GET['rarity_filter'] : 0;
 
 $sql = "SELECT * FROM operators WHERE 1=1";
 $params = [];
 
-if ($search !== '') {$sql .= " AND name LIKE :search";
-    $params['search'] = "\%$search%";
+if ($search !== '') {
+    $sql .= " AND name LIKE :search";
+    $params['search'] = "%$search%";
 }
-if ($classFilter !== '') {$sql .= " AND class = :class";
-    $params['class'] =$classFilter;
+if ($classFilter !== '') {
+    $sql .= " AND class = :class";
+    $params['class'] = $classFilter;
+}
+if ($rarityFilter >= 1 && $rarityFilter <= 6) {
+    $sql .= " AND rarity = :rarity";
+    $params['rarity'] = $rarityFilter;
 }
 
 $sql .= " ORDER BY rarity DESC, name ASC";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
-$operators =$stmt->fetchAll(PDO::FETCH_ASSOC);
+$operators = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$randomOpId = 0;
+try {
+    $randId = $pdo->query("SELECT id FROM operators ORDER BY RAND() LIMIT 1")->fetchColumn();
+    if ($randId) {
+        $randomOpId = (int)$randId;
+    }
+} catch (Throwable $e) {
+    $randomOpId = !empty($operators) ? (int)$operators[0]['id'] : 0;
+}
 
 $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
 ?>
@@ -149,6 +166,32 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
             font-size: 13px;
             color: #94A3B8;
         }
+        .banner-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn-random {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 6px;
+            background: rgba(255, 180, 0, 0.14);
+            border: 1px solid rgba(255, 180, 0, 0.55);
+            color: #ffb400;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.7px;
+            text-decoration: none;
+            text-transform: uppercase;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .btn-random:hover {
+            background: #ffb400;
+            color: #070B10;
+        }
         .roster-counter {
             background: rgba(0, 188, 212, 0.12);
             border: 1px solid rgba(0, 188, 212, 0.45);
@@ -168,7 +211,7 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
         }
         .search-form {
             display: grid;
-            grid-template-columns: 1fr 210px auto auto;
+            grid-template-columns: 1fr 190px 150px auto auto;
             gap: 10px;
             padding: 14px;
             background: rgba(13, 22, 34, 0.88);
@@ -192,6 +235,30 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
         .search-form input:focus,
         .search-form select:focus {
             border-color: #00bcd4;
+        }
+        .rarity-pills {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .rarity-pill {
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(7, 11, 16, 0.82);
+            border: 1px solid #2A3B52;
+            color: #CBD5E1;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .rarity-pill:hover,
+        .rarity-pill.active {
+            background: #ffb400;
+            border-color: #ffb400;
+            color: #070B10;
         }
         .btn-search {
             padding: 11px 20px;
@@ -356,7 +423,10 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
             color: #94A3B8;
         }
 
-        @media (max-width: 760px) {
+        @media (max-width: 900px) {
+            .search-form { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 640px) {
             .search-form { grid-template-columns: 1fr; }
             .main-header { padding: 14px 16px; }
         }
@@ -391,40 +461,61 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
                 <h1>OPERATOR DATABASE</h1>
                 <p>Browse active personnel files, combat dossiers, and AI neural link terminals.</p>
             </div>
-            <div class="roster-counter">
-                <?= count($operators) ?> <?= count($operators) === 1 ? 'OPERATOR' : 'OPERATORS' ?>
+            <div class="banner-right">
+                <?php if ($randomOpId > 0): ?>
+                    <a href="details.php?id=<?= $randomOpId ?>" class="btn-random">🎲 RANDOM OPERATOR</a>
+                <?php endif; ?>
+                <div class="roster-counter" id="roster-counter">
+                    <?= count($operators) ?> <?= count($operators) === 1 ? 'OPERATOR' : 'OPERATORS' ?>
+                </div>
             </div>
         </section>
 
         <section class="filter-section">
-            <form method="GET" action="index.php" class="search-form">
-                <input type="text" name="search" placeholder="Search by operator name..."
+            <form method="GET" action="index.php" class="search-form" id="filter-form">
+                <input type="text" name="search" id="live-search" placeholder="Search by operator name..."
                        value="<?php echo htmlspecialchars($search); ?>">
 
-                <select name="class_filter">
+                <select name="class_filter" id="live-class">
                     <option value="">ALL CLASSES</option>
                     <?php
                     $classes = ['Vanguard', 'Guard', 'Sniper', 'Defender', 'Medic', 'Supporter', 'Caster', 'Specialist'];
-                    foreach ($classes as $c) {$selected = ($classFilter ===$c) ? 'selected' : '';
+                    foreach ($classes as $c) {
+                        $selected = ($classFilter === $c) ? 'selected' : '';
                         echo "<option value='" . htmlspecialchars($c, ENT_QUOTES, 'UTF-8') . "' $selected>" . strtoupper(htmlspecialchars($c, ENT_QUOTES, 'UTF-8')) . "</option>";
                     }
                     ?>
                 </select>
+
+                <select name="rarity_filter" id="live-rarity">
+                    <option value="">ALL RARITIES</option>
+                    <?php for ($r = 6; $r >= 1; $r--): ?>
+                        <option value="<?= $r ?>" <?= ($rarityFilter === $r) ? 'selected' : '' ?>><?= $r ?>★</option>
+                    <?php endfor; ?>
+                </select>
+
                 <button type="submit" class="btn-search">SEARCH</button>
                 <a href="index.php" class="btn-reset">RESET</a>
             </form>
+
+            <div class="rarity-pills" role="group" aria-label="Rarity Filter">
+                <button type="button" class="rarity-pill <?= $rarityFilter === 0 ? 'active' : '' ?>" data-rarity="">ALL ★</button>
+                <?php for ($r = 6; $r >= 1; $r--): ?>
+                    <button type="button" class="rarity-pill <?= $rarityFilter === $r ? 'active' : '' ?>" data-rarity="<?= $r ?>"><?= $r ?>★</button>
+                <?php endfor; ?>
+            </div>
         </section>
 
-        <div class="gallery">
+        <div class="gallery" id="operator-gallery">
         <?php
-        if (count($operators) === 0) {
-            echo "<div class='empty-box'>No operators found matching your search.</div>";
-        }
-
-        foreach ($operators as$row) {
-            if ($row['rarity'] == 6) {$borderColor = '#ffb400';
-            } elseif ($row['rarity'] == 5) {$borderColor = '#e5b1ff';
-            } elseif ($row['rarity'] == 4) {$borderColor = '#29b6f6';
+        foreach ($operators as $row) {
+            $rarityVal = max(1, min(6, (int)$row['rarity']));
+            if ($rarityVal == 6) {
+                $borderColor = '#ffb400';
+            } elseif ($rarityVal == 5) {
+                $borderColor = '#e5b1ff';
+            } elseif ($rarityVal == 4) {
+                $borderColor = '#29b6f6';
             } else {
                 $borderColor = '#666666';
             }
@@ -432,7 +523,11 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
             $hasE2 = !empty($row['image_path_e2']);
             $imgPath = !empty($row['image_path']) ? $row['image_path'] : ($row['image_path_e2'] ?? '');
         ?>
-            <div class="card" style="border: 2px solid <?php echo $borderColor; ?>;">
+            <div class="card"
+                 data-name="<?php echo htmlspecialchars(strtolower($row['name']), ENT_QUOTES, 'UTF-8'); ?>"
+                 data-class="<?php echo htmlspecialchars($row['class'], ENT_QUOTES, 'UTF-8'); ?>"
+                 data-rarity="<?php echo $rarityVal; ?>"
+                 style="border: 2px solid <?php echo $borderColor; ?>;">
                 <a href="details.php?id=<?php echo (int)$row['id']; ?>" style="text-decoration: none; color: inherit;">
                     <div class="card-media">
                         <?php if ($hasE2): ?>
@@ -447,7 +542,7 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
                     <div class="card-info">
                         <h3><?php echo strtoupper(htmlspecialchars($row['name'])); ?></h3>
                         <div class="rarity" style="color: <?php echo $borderColor; ?>;">
-                            <?php echo str_repeat('★', max(1, min(6, (int)$row['rarity']))); ?>
+                            <?php echo str_repeat('★', $rarityVal); ?>
                         </div>
                     </div>
                 </a>
@@ -458,9 +553,71 @@ $accentColor = ($role === 'admin') ? '#ffb400' : '#00B4D8';
                 </div>
             </div>
         <?php } ?>
+            <div class="empty-box" id="live-empty-box" style="display: <?php echo count($operators) === 0 ? 'block' : 'none'; ?>;">
+                No operators found matching your search or filter.
+            </div>
         </div>
     </div>
 
     <a href="#top" class="back-to-top" title="Return to Top">▲</a>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchInput = document.getElementById('live-search');
+        const classSelect = document.getElementById('live-class');
+        const raritySelect = document.getElementById('live-rarity');
+        const pills = document.querySelectorAll('.rarity-pill');
+        const cards = document.querySelectorAll('#operator-gallery .card');
+        const counter = document.getElementById('roster-counter');
+        const emptyBox = document.getElementById('live-empty-box');
+
+        function syncPills(val) {
+            pills.forEach(p => {
+                p.classList.toggle('active', String(p.dataset.rarity) === String(val));
+            });
+        }
+
+        function applyLiveFilter() {
+            const q = (searchInput ? searchInput.value : '').trim().toLowerCase();
+            const cls = classSelect ? classSelect.value : '';
+            const rar = raritySelect ? raritySelect.value : '';
+            let visible = 0;
+
+            cards.forEach(card => {
+                const nameMatch = !q || (card.dataset.name || '').includes(q);
+                const classMatch = !cls || (card.dataset.class || '') === cls;
+                const rarityMatch = !rar || String(card.dataset.rarity || '') === String(rar);
+                const show = nameMatch && classMatch && rarityMatch;
+                card.style.display = show ? 'flex' : 'none';
+                if (show) visible++;
+            });
+
+            if (counter) {
+                counter.textContent = `${visible} ${visible === 1 ? 'OPERATOR' : 'OPERATORS'}`;
+            }
+            if (emptyBox) {
+                emptyBox.style.display = visible === 0 ? 'block' : 'none';
+            }
+        }
+
+        if (searchInput) searchInput.addEventListener('input', applyLiveFilter);
+        if (classSelect) classSelect.addEventListener('change', applyLiveFilter);
+        if (raritySelect) {
+            raritySelect.addEventListener('change', function() {
+                syncPills(this.value);
+                applyLiveFilter();
+            });
+        }
+
+        pills.forEach(pill => {
+            pill.addEventListener('click', function() {
+                const chosen = this.dataset.rarity || '';
+                if (raritySelect) raritySelect.value = chosen;
+                syncPills(chosen);
+                applyLiveFilter();
+            });
+        });
+    });
+    </script>
 </body>
 </html>

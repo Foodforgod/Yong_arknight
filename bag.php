@@ -6,14 +6,34 @@ if (session_status() === PHP_SESSION_NONE) {
 
 $role = $_SESSION['role'] ?? 'guest';
 $username = $_SESSION['username'] ?? 'Guest';
+$userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
 
-$sql = "SELECT DISTINCT o.*
-        FROM operators o
-        JOIN user_inventory inv ON o.id = inv.operator_id
-        ORDER BY o.rarity DESC, o.name ASC";
-$stmt = $pdo->query($sql);
+$hasUserIdCol = false;
+try {
+    $colsStmt = $pdo->query("SHOW COLUMNS FROM user_inventory");
+    $colNames = array_column($colsStmt->fetchAll(PDO::FETCH_ASSOC), 'Field');
+    $hasUserIdCol = in_array('user_id', $colNames, true);
+} catch (Throwable $e) {
+    // Default schema
+}
+
+if ($hasUserIdCol) {
+    $sql = "SELECT DISTINCT o.*
+            FROM operators o
+            JOIN user_inventory inv ON o.id = inv.operator_id
+            WHERE inv.user_id = :uid OR inv.user_id = 0
+            ORDER BY o.rarity DESC, o.name ASC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(['uid' => $userId]);
+} else {
+    $sql = "SELECT DISTINCT o.*
+            FROM operators o
+            JOIN user_inventory inv ON o.id = inv.operator_id
+            ORDER BY o.rarity DESC, o.name ASC";
+    $stmt = $pdo->query($sql);
+}
+
 $inventory_ops = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
 $totalUniqueOps = count($inventory_ops);
 ?>
 <!DOCTYPE html>

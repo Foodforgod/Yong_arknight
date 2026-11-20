@@ -1,6 +1,8 @@
 <?php
 require_once 'db.php';
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // Strict Admin Access Control
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
@@ -15,7 +17,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
 try {
     $colStmt = $pdo->query("SHOW COLUMNS FROM operator_sounds LIKE 'sound_name'");
     $colInfo = $colStmt->fetch(PDO::FETCH_ASSOC);
-    if ($colInfo && stripos($colInfo['Type'], 'text') === false) {
+    if ($colInfo && stripos($colInfo['Type'] ?? '', 'longtext') === false) {
         $pdo->exec("ALTER TABLE operator_sounds MODIFY COLUMN sound_name LONGTEXT NULL");
     }
 } catch (Throwable $e) {
@@ -69,8 +71,8 @@ $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $name        = trim($_POST['name'] ?? '');
     $class       = trim($_POST['class'] ?? '');
-    $rarity      = intval($_POST['rarity'] ?? 1);
-    
+    $rarity      = max(1, min(6, intval($_POST['rarity'] ?? 1)));
+
     // Phase 0/1 Stats
     $hp          = intval($_POST['hp'] ?? 0);
     $atk         = intval($_POST['atk'] ?? 0);
@@ -90,20 +92,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $image_path      = trim($_POST['image_path'] ?? '');
     $image_e2        = trim($_POST['image_path_e2'] ?? '');
     $wallpaper       = trim($_POST['wallpaper'] ?? '');
-    $video_url       = trim($_POST['video_url'] ?? '');       // YouTube link for details.php
-    $howto_video_url = trim($_POST['howto_video_url'] ?? ''); // How to Play video for details.php
-    $stage_video     = trim($_POST['stage_video'] ?? '');     // Stand animation for ai_talking.php
-    $deploy_video    = trim($_POST['deploy_video'] ?? '');    // Deploy animation for ai_talking.php
-    $attack_video    = trim($_POST['attack_video'] ?? '');    // Attack animation for ai_talking.php
+    $video_url       = trim($_POST['video_url'] ?? '');
+    $howto_video_url = trim($_POST['howto_video_url'] ?? '');
+    $stage_video     = trim($_POST['stage_video'] ?? '');
+    $deploy_video    = trim($_POST['deploy_video'] ?? '');
+    $attack_video    = trim($_POST['attack_video'] ?? '');
 
     // Handle direct HD wallpaper image file upload (.jpg, .png, .webp, .gif)
     if (isset($_FILES['wallpaper_file']) && $_FILES['wallpaper_file']['error'] === UPLOAD_ERR_OK) {
         if (!is_dir('uploads')) {
             mkdir('uploads', 0777, true);
         }
-        $ext = strtolower(pathinfo($_FILES['wallpaper_file']['name'], PATHINFO_EXTENSION)); 
+        $ext = strtolower(pathinfo($_FILES['wallpaper_file']['name'], PATHINFO_EXTENSION));
         $allowed = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
-        if (in_array($ext, $allowed)) { 
+        if (in_array($ext, $allowed, true)) {
             $new_filename = 'uploads/bg_op_' . $id . '_' . time() . '.' . $ext;
             if (move_uploaded_file($_FILES['wallpaper_file']['tmp_name'], $new_filename)) {
                 $wallpaper = $new_filename;
@@ -132,15 +134,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // Handle multiple MP3 and WAV sound file uploads
-    if (isset($_FILES['mp3_files'])) {
+    if (isset($_FILES['mp3_files']) && is_array($_FILES['mp3_files']['name'])) {
         if (!is_dir('uploads/sounds')) {
             mkdir('uploads/sounds', 0777, true);
         }
         foreach ($_FILES['mp3_files']['name'] as $index => $filename) {
-            if ($_FILES['mp3_files']['error'][$index] === UPLOAD_ERR_OK) {
-                $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-                if (in_array($ext, ['mp3', 'wav'])) { 
-                    $sound_name = pathinfo($filename, PATHINFO_FILENAME); 
+            if (($_FILES['mp3_files']['error'][$index] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+                $ext = strtolower(pathinfo((string)$filename, PATHINFO_EXTENSION));
+                if (in_array($ext, ['mp3', 'wav'], true)) {
+                    $sound_name = pathinfo((string)$filename, PATHINFO_FILENAME);
                     $new_audio_path = 'uploads/sounds/sound_' . $id . '_' . time() . '_' . $index . '.' . $ext;
                     if (move_uploaded_file($_FILES['mp3_files']['tmp_name'][$index], $new_audio_path)) {
                         $sound_insert = $pdo->prepare("INSERT INTO operator_sounds (operator_id, sound_name, file_path) VALUES (?, ?, ?)");
@@ -158,9 +160,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $s_fetch->execute([$del_id, $id]);
         $s_row = $s_fetch->fetch(PDO::FETCH_ASSOC);
         if ($s_row) {
-            if (file_exists($s_row['file_path'])) { @unlink($s_row['file_path']); }
-            $s_del = $pdo->prepare("DELETE FROM operator_sounds WHERE id = ?");
-            $s_del->execute([$del_id]);
+            if (!empty($s_row['file_path']) && file_exists($s_row['file_path'])) {
+                @unlink($s_row['file_path']);
+            }
+            $s_del = $pdo->prepare("DELETE FROM operator_sounds WHERE id = ? AND operator_id = ?");
+            $s_del->execute([$del_id, $id]);
         }
     }
 
@@ -209,6 +213,10 @@ $op = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$op) {
     die("<div style='color: white; text-align: center; margin-top: 50px;'><h2>Error: Operator not found.</h2><a href='admin.php' style='color: #ffb400;'>Return to Admin Portal</a></div>");
 }
+
+$sounds_q = $pdo->prepare("SELECT * FROM operator_sounds WHERE operator_id = ? ORDER BY id ASC");
+$sounds_q->execute([$id]);
+$existing_sounds = $sounds_q->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -218,20 +226,23 @@ if (!$op) {
     <title>Edit Operator - <?php echo htmlspecialchars($op['name']); ?></title>
     <link rel="stylesheet" href="style.css">
     <style>
-        body { background-color: #0b0f12; color: #ffffff; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
+        body.admin-edit-page { background-color: #0b0f12; color: #ffffff; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; text-align: left; }
         .edit-container { max-width: 860px; margin: 30px auto; background: rgba(22, 34, 49, 0.95); border: 2px solid #E59811; border-radius: 10px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.9); }
         h2 { color: #E59811; text-transform: uppercase; letter-spacing: 1px; margin-top: 0; border-bottom: 2px solid #2A3B52; padding-bottom: 12px; font-size: 18px; }
         h3 { color: #00B4D8; text-transform: uppercase; letter-spacing: 1px; font-size: 13px; margin: 24px 0 12px 0; border-bottom: 1px solid #2A3B52; padding-bottom: 6px; }
         .form-group { margin-bottom: 16px; }
         .form-group label { display: block; color: #00B4D8; font-weight: bold; margin-bottom: 6px; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
-        .form-group input, .form-group textarea { width: 100%; padding: 12px; background: #0B131D; border: 1px solid #2A3B52; color: #E2E8F0; font-size: 14px; border-radius: 6px; outline: none; box-sizing: border-box; }
+        .form-group input, .form-group textarea { width: 100%; padding: 12px; background: #0B131D; border: 1px solid #2A3B52; color: #E2E8F0; font-size: 14px; border-radius: 6px; outline: none; box-sizing: border-box; margin-bottom: 0; }
         .form-group textarea { height: 110px; resize: vertical; }
-        .form-row { display: flex; gap: 15px; }
-        .form-row .form-group { flex: 1; }
+        .form-row { display: flex; gap: 15px; flex-wrap: wrap; }
+        .form-row .form-group { flex: 1; min-width: 180px; }
         .skill-card-edit { background: #0B131D; border: 1px solid #2A3B52; border-left: 3px solid #E59811; padding: 15px; border-radius: 6px; margin-bottom: 14px; }
         .anim-slot-card { background: #0B131D; border: 1px solid #2A3B52; border-left: 3px solid #00B4D8; padding: 15px; border-radius: 6px; margin-bottom: 14px; }
-        .sound-row-card { display: flex; gap: 10px; margin-bottom: 12px; align-items: flex-start; background: #101B29; padding: 10px; border-radius: 6px; border: 1px solid #1E2E42; }
-        .sound-textarea { flex: 1; min-height: 68px; padding: 10px; font-size: 13px; line-height: 1.5; resize: vertical; background: #0B131D; border: 1px solid #2A3B52; color: #E2E8F0; border-radius: 6px; box-sizing: border-box; }
+        .preview-chip { display: inline-block; margin-top: 8px; padding: 5px 10px; background: #101B29; border: 1px solid #2A3B52; border-radius: 4px; font-size: 11px; color: #94A3B8; word-break: break-all; }
+        .preview-img { margin-top: 8px; max-height: 84px; border-radius: 6px; border: 1px solid #2A3B52; display: block; }
+        .sound-row-card { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; background: #101B29; padding: 12px; border-radius: 6px; border: 1px solid #1E2E42; }
+        .sound-row-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .sound-textarea { width: 100%; min-height: 68px; padding: 10px; font-size: 13px; line-height: 1.5; resize: vertical; background: #0B131D; border: 1px solid #2A3B52; color: #E2E8F0; border-radius: 6px; box-sizing: border-box; }
         .btn-submit { background: #E59811; color: #000; font-weight: bold; padding: 14px 25px; border: none; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 15px; width: 100%; margin-top: 10px; transition: 0.2s; }
         .btn-submit:hover { background: #fff; }
         .nav-links { text-align: center; margin-top: 20px; font-size: 13px; }
@@ -240,7 +251,7 @@ if (!$op) {
         .success-msg { background: rgba(76, 175, 80, 0.2); border: 1px solid #4caf50; color: #4caf50; padding: 12px; border-radius: 6px; margin-bottom: 20px; text-align: center; font-weight: bold; }
     </style>
 </head>
-<body>
+<body class="admin-edit-page">
     <div class="edit-container">
         <h2>⚙️ Edit Operator Record: <?php echo htmlspecialchars($op['name']); ?></h2>
 
@@ -309,19 +320,21 @@ if (!$op) {
                 <small style="color: #94A3B8; display: block; margin-top: 5px;">Select and upload multiple MP3 or WAV audio files at once. Subtitles have no character cap.</small>
             </div>
 
-            <?php
-            $sounds_q = $pdo->prepare("SELECT * FROM operator_sounds WHERE operator_id = ?");
-            $sounds_q->execute([$id]);
-            $existing_sounds = $sounds_q->fetchAll(PDO::FETCH_ASSOC);
-            if (!empty($existing_sounds)):
-            ?>
+            <?php if (!empty($existing_sounds)): ?>
                 <div style="background: #0B131D; border: 1px solid #2A3B52; padding: 15px; border-radius: 6px; margin-bottom: 16px;">
                     <label style="color: #00B4D8; font-size: 12px; font-weight: bold; margin-bottom: 12px; display: block;">EDIT VOICE LINE SUBTITLES (UNLIMITED LENGTH):</label>
                     <?php foreach ($existing_sounds as $snd): ?>
                         <div class="sound-row-card">
-                            <span style="font-size: 12px; color: #94A3B8; width: 145px; padding-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($snd['file_path']); ?>">🎵 <?php echo htmlspecialchars(basename($snd['file_path'])); ?></span>
-                            <textarea name="sound_texts[<?php echo $snd['id']; ?>]" class="sound-textarea" placeholder="Enter full voice line subtitle text..."><?php echo htmlspecialchars($snd['sound_name'] ?? ''); ?></textarea>
-                            <button type="submit" name="delete_sound_id" value="<?php echo $snd['id']; ?>" style="background: #EF4444; color: #fff; border: none; padding: 9px 12px; border-radius: 4px; font-size: 11px; font-weight: bold; cursor: pointer; margin-top: 4px;" onclick="return confirm('Delete this sound?');">DELETE</button>
+                            <div class="sound-row-top">
+                                <span style="font-size: 12px; color: #94A3B8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="<?php echo htmlspecialchars($snd['file_path']); ?>">🎵 <?php echo htmlspecialchars(basename($snd['file_path'])); ?></span>
+                                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                    <?php if (!empty($snd['file_path'])): ?>
+                                        <audio controls preload="none" src="<?php echo htmlspecialchars($snd['file_path'], ENT_QUOTES, 'UTF-8'); ?>" style="height:30px; max-width:210px;"></audio>
+                                    <?php endif; ?>
+                                    <button type="submit" name="delete_sound_id" value="<?php echo (int)$snd['id']; ?>" style="background: #EF4444; color: #fff; border: none; padding: 7px 11px; border-radius: 4px; font-size: 11px; font-weight: bold; cursor: pointer;" onclick="return confirm('Delete this sound?');">DELETE</button>
+                                </div>
+                            </div>
+                            <textarea name="sound_texts[<?php echo (int)$snd['id']; ?>]" class="sound-textarea" placeholder="Enter full voice line subtitle text..."><?php echo htmlspecialchars($snd['sound_name'] ?? ''); ?></textarea>
                         </div>
                     <?php endforeach; ?>
                 </div>
@@ -336,7 +349,7 @@ if (!$op) {
             <div class="form-row">
                 <div class="form-group">
                     <label>Portrait Image Path (Standard / E1)</label>
-                    <input type="text" name="image_path" value="<?php echo htmlspecialchars($op['image_path']); ?>">
+                    <input type="text" name="image_path" value="<?php echo htmlspecialchars($op['image_path'] ?? ''); ?>">
                 </div>
                 <div class="form-group">
                     <label>Elite 2 Portrait Image Path</label>
@@ -352,6 +365,10 @@ if (!$op) {
                 <div class="form-group">
                     <label>Or Paste Background Wallpaper Path / URL</label>
                     <input type="text" name="wallpaper" value="<?php echo htmlspecialchars($op['wallpaper'] ?? ''); ?>" placeholder="uploads/bg.jpg">
+                    <?php if (!empty($op['wallpaper'])): ?>
+                        <span class="preview-chip">Active: <?php echo htmlspecialchars($op['wallpaper']); ?></span>
+                        <img class="preview-img" src="<?php echo htmlspecialchars($op['wallpaper'], ENT_QUOTES, 'UTF-8'); ?>" alt="Wallpaper preview">
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -376,6 +393,9 @@ if (!$op) {
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Or Deploy MP4/WEBM Path / URL</label>
                         <input type="text" name="deploy_video" value="<?php echo htmlspecialchars($op['deploy_video'] ?? ''); ?>" placeholder="uploads/deploy_op.mp4">
+                        <?php if (!empty($op['deploy_video'])): ?>
+                            <span class="preview-chip">Deploy: <?php echo htmlspecialchars($op['deploy_video']); ?></span>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -389,6 +409,9 @@ if (!$op) {
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Or Stand MP4/WEBM Path / URL</label>
                         <input type="text" name="stage_video" value="<?php echo htmlspecialchars($op['stage_video'] ?? ''); ?>" placeholder="uploads/stage_op.mp4">
+                        <?php if (!empty($op['stage_video'])): ?>
+                            <span class="preview-chip">Stand: <?php echo htmlspecialchars($op['stage_video']); ?></span>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -402,6 +425,9 @@ if (!$op) {
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Or Attack MP4/WEBM Path / URL</label>
                         <input type="text" name="attack_video" value="<?php echo htmlspecialchars($op['attack_video'] ?? ''); ?>" placeholder="uploads/attack_op.mp4">
+                        <?php if (!empty($op['attack_video'])): ?>
+                            <span class="preview-chip">Attack: <?php echo htmlspecialchars($op['attack_video']); ?></span>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
